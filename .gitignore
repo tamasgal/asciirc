@@ -1,0 +1,4 @@
+*.o
+/asciirc
+/tests/test
+__pycache__/
