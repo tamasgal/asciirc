@@ -282,6 +282,22 @@ Json *json_get(const Json *obj, const char *key)
 	return NULL;
 }
 
+Json *json_path(const Json *v, const char *path)
+{
+	char key[128];
+	while (v && *path) {
+		const char *dot = strchr(path, '.');
+		size_t n = dot ? (size_t)(dot - path) : strlen(path);
+		if (n >= sizeof(key))
+			return NULL;
+		memcpy(key, path, n);
+		key[n] = '\0';
+		v = json_get(v, key);
+		path += n + (dot ? 1 : 0);
+	}
+	return (Json *)v;
+}
+
 Json *json_at(const Json *arr, size_t i)
 {
 	if (!arr || (arr->type != JSON_ARRAY && arr->type != JSON_OBJECT) || i >= arr->len)
