@@ -127,3 +127,24 @@ char *buf_steal(Buf *b)
 	buf_init(b);
 	return p;
 }
+
+void buf_json_str(Buf *b, const char *s)
+{
+	buf_putc(b, '"');
+	for (; *s; s++) {
+		unsigned char c = (unsigned char)*s;
+		switch (c) {
+		case '"': buf_puts(b, "\\\""); break;
+		case '\\': buf_puts(b, "\\\\"); break;
+		case '\n': buf_puts(b, "\\n"); break;
+		case '\r': buf_puts(b, "\\r"); break;
+		case '\t': buf_puts(b, "\\t"); break;
+		default:
+			if (c < 0x20)
+				buf_printf(b, "\\u%04x", c);
+			else
+				buf_putc(b, (char)c);
+		}
+	}
+	buf_putc(b, '"');
+}
