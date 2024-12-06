@@ -110,6 +110,18 @@ static char *parse_string_raw(Parser *ps)
 			if (ps->end - ps->p < 4 || !hex4(ps->p, &cp))
 				goto fail;
 			ps->p += 4;
+			if (cp >= 0xd800 && cp < 0xdc00) {
+				unsigned lo;
+				if (ps->end - ps->p >= 6 && ps->p[0] == '\\' && ps->p[1] == 'u' &&
+				    hex4(ps->p + 2, &lo) && lo >= 0xdc00 && lo < 0xe000) {
+					ps->p += 6;
+					cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00);
+				} else {
+					cp = 0xfffd;
+				}
+			} else if (cp >= 0xdc00 && cp < 0xe000) {
+				cp = 0xfffd;
+			}
 			put_utf8(&b, cp);
 			break;
 		}
