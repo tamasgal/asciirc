@@ -72,7 +72,7 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 		buf_printf(&req, "Host: %s\r\n", u->host);
 	else
 		buf_printf(&req, "Host: %s:%s\r\n", u->host, u->port);
-	buf_puts(&req, "User-Agent: asciirc\r\nAccept: application/json\r\nConnection: keep-alive\r\n");
+	buf_puts(&req, "User-Agent: asciirc\r\nAccept: application/json\r\nConnection: close\r\n");
 	if (extra_headers)
 		buf_puts(&req, extra_headers);
 	if (json_body) {
