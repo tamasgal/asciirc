@@ -33,6 +33,27 @@ static const char *find_header(const char *hdrs, size_t hlen, const char *name)
 	return NULL;
 }
 
+static int dechunk(const char *p, size_t n, Buf *out)
+{
+	const char *end = p + n;
+	for (;;) {
+		char *endp;
+		unsigned long sz = strtoul(p, &endp, 16);
+		if (endp == p)
+			return -1;
+		const char *eol = strstr(endp, "\r\n");
+		if (!eol || eol + 2 > end)
+			return -1;
+		p = eol + 2;
+		if (sz == 0)
+			return 0;
+		if ((size_t)(end - p) < sz + 2)
+			return -1;
+		buf_append(out, p, sz);
+		p += sz + 2;
+	}
+}
+
 int http_request(const Url *u, const char *method, const char *path, const char *extra_headers,
 		 const char *json_body, HttpResponse *resp, char *err, size_t errlen)
 {
@@ -104,13 +125,23 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 	size_t hlen = (size_t)(hend - raw.data);
 	const char *body = hend + 4;
 	size_t blen = raw.len - hlen - 4;
-	const char *cl = find_header(raw.data, hlen, "Content-Length");
-	if (cl) {
-		size_t want = (size_t)strtoull(cl, NULL, 10);
-		if (want < blen)
-			blen = want;
+	const char *te = find_header(raw.data, hlen, "Transfer-Encoding");
+	if (te && strncmp(te, "chunked", 7) == 0) {
+		if (dechunk(body, blen, &resp->body) < 0) {
+			snprintf(err, errlen, "malformed chunked response");
+			buf_free(&raw);
+			buf_free(&resp->body);
+			return -1;
+		}
+	} else {
+		const char *cl = find_header(raw.data, hlen, "Content-Length");
+		if (cl) {
+			size_t want = (size_t)strtoull(cl, NULL, 10);
+			if (want < blen)
+				blen = want;
+		}
+		buf_append(&resp->body, body, blen);
 	}
-	buf_append(&resp->body, body, blen);
 	buf_free(&raw);
 	return 0;
 }
