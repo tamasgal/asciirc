@@ -178,6 +178,14 @@ int net_fd(const Conn *c)
 	return c->fd;
 }
 
+int net_set_nonblocking(Conn *c)
+{
+	int fl = fcntl(c->fd, F_GETFL);
+	if (fl < 0)
+		return -1;
+	return fcntl(c->fd, F_SETFL, fl | O_NONBLOCK);
+}
+
 ssize_t net_read(Conn *c, void *buf, size_t n)
 {
 	if (!c->ssl) {
