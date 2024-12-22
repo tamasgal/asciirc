@@ -67,17 +67,18 @@ int ws_connect(WebSocket *ws, const Url *u, const char *path, char *err, size_t 
 	if (!ws->conn)
 		return -1;
 
+	int default_port = strcmp(u->port, u->tls ? "443" : "80") == 0;
 	Buf req;
 	buf_init(&req);
 	buf_printf(&req,
 		   "GET %s%s HTTP/1.1\r\n"
-		   "Host: %s\r\n"
+		   "Host: %s%s%s\r\n"
 		   "User-Agent: asciirc\r\n"
 		   "Upgrade: websocket\r\n"
 		   "Connection: Upgrade\r\n"
 		   "Sec-WebSocket-Key: %s\r\n"
 		   "Sec-WebSocket-Version: 13\r\n\r\n",
-		   u->path, path, u->host, key);
+		   u->path, path, u->host, default_port ? "" : ":", default_port ? "" : u->port, key);
 	int wr = net_write_all(ws->conn, req.data, req.len);
 	buf_free(&req);
 	if (wr < 0) {
