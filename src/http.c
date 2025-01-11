@@ -7,6 +7,17 @@
 
 #define HTTP_MAX_RESPONSE (64u * 1024 * 1024)
 
+void url_encode(Buf *b, const char *s)
+{
+	for (; *s; s++) {
+		unsigned char c = (unsigned char)*s;
+		if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~')
+			buf_putc(b, (char)c);
+		else
+			buf_printf(b, "%%%02X", c);
+	}
+}
+
 static const char *find_header(const char *hdrs, size_t hlen, const char *name)
 {
 	size_t nlen = strlen(name);
