@@ -169,6 +169,8 @@ static void push_item(Json *v, char *key, Json *item)
 
 static Json *parse_container(Parser *ps, int is_obj)
 {
+	if (++ps->depth > JSON_MAX_DEPTH)
+		return NULL;
 	ps->p++;
 	Json *v = new_value(is_obj ? JSON_OBJECT : JSON_ARRAY);
 	char close = is_obj ? '}' : ']';
