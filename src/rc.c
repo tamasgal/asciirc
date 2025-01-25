@@ -143,7 +143,20 @@ static void ddp_handle(Rc *rc, const Json *m, const RcHandlers *h, void *ctx)
 	const char *type = json_get_str(m, "msg");
 	if (!type)
 		return;
-	if (strcmp(type, "connected") == 0) {
+	if (strcmp(type, "ping") == 0) {
+		Buf b;
+		buf_init(&b);
+		const char *id = json_get_str(m, "id");
+		if (id) {
+			buf_puts(&b, "{\"msg\":\"pong\",\"id\":");
+			buf_json_str(&b, id);
+			buf_puts(&b, "}");
+		} else {
+			buf_puts(&b, "{\"msg\":\"pong\"}");
+		}
+		ddp_send(rc, &b);
+		buf_free(&b);
+	} else if (strcmp(type, "connected") == 0) {
 		Buf b;
 		buf_init(&b);
 		/* resume works for personal access tokens too */
