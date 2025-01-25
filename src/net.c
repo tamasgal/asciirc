@@ -261,3 +261,8 @@ int net_write_all(Conn *c, const void *buf, size_t n)
 	}
 	return 0;
 }
+
+int net_pending(const Conn *c)
+{
+	return c->ssl ? SSL_pending(c->ssl) : 0;
+}
