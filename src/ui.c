@@ -249,3 +249,105 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 	}
 	return nk;
 }
+
+static size_t prev_pos(const Input *in, size_t pos)
+{
+	if (pos == 0)
+		return 0;
+	pos--;
+	while (pos > 0 && ((unsigned char)in->text[pos] & 0xc0) == 0x80)
+		pos--;
+	return pos;
+}
+
+static size_t next_pos(const Input *in, size_t pos)
+{
+	if (pos >= in->len)
+		return in->len;
+	pos++;
+	while (pos < in->len && ((unsigned char)in->text[pos] & 0xc0) == 0x80)
+		pos++;
+	return pos;
+}
+
+static void delete_range(Input *in, size_t a, size_t b)
+{
+	if (b <= a)
+		return;
+	memmove(in->text + a, in->text + b, in->len - b);
+	in->len -= b - a;
+	in->text[in->len] = '\0';
+	if (in->cur > b)
+		in->cur -= b - a;
+	else if (in->cur > a)
+		in->cur = a;
+}
+
+void ui_input_set(Input *in, const char *s)
+{
+	size_t n = strlen(s);
+	if (n >= INPUT_MAX)
+		n = INPUT_MAX - 1;
+	memcpy(in->text, s, n);
+	in->text[n] = '\0';
+	in->len = n;
+	in->cur = n;
+}
+
+int ui_input_key(Input *in, const Key *k)
+{
+	switch (k->type) {
+	case K_CHAR: {
+		size_t n = strlen(k->utf8);
+		if (in->len + n >= INPUT_MAX)
+			return 1;
+		memmove(in->text + in->cur + n, in->text + in->cur, in->len - in->cur);
+		memcpy(in->text + in->cur, k->utf8, n);
+		in->len += n;
+		in->cur += n;
+		in->text[in->len] = '\0';
+		return 1;
+	}
+	case K_BACKSPACE:
+		delete_range(in, prev_pos(in, in->cur), in->cur);
+		return 1;
+	case K_DELETE:
+		delete_range(in, in->cur, next_pos(in, in->cur));
+		return 1;
+	case K_LEFT:
+		in->cur = prev_pos(in, in->cur);
+		return 1;
+	case K_RIGHT:
+		in->cur = next_pos(in, in->cur);
+		return 1;
+	case K_HOME:
+		in->cur = 0;
+		return 1;
+	case K_END:
+		in->cur = in->len;
+		return 1;
+	case K_CTRL:
+		switch (k->c) {
+		case 'a': in->cur = 0; return 1;
+		case 'e': in->cur = in->len; return 1;
+		case 'b': in->cur = prev_pos(in, in->cur); return 1;
+		case 'f': in->cur = next_pos(in, in->cur); return 1;
+		case 'd': delete_range(in, in->cur, next_pos(in, in->cur)); return 1;
+		case 'k': delete_range(in, in->cur, in->len); return 1;
+		case 'u': delete_range(in, 0, in->cur); return 1;
+		case 'w': {
+			size_t p = in->cur;
+			while (p > 0 && in->text[p - 1] == ' ')
+				p--;
+			while (p > 0 && in->text[p - 1] != ' ')
+				p--;
+			delete_range(in, p, in->cur);
+			return 1;
+		}
+		default:
+			return 0;
+		}
+	default:
+		return 0;
+	}
+}
