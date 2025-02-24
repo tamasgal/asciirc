@@ -151,3 +151,101 @@ static int str_width(const char *s, size_t n)
 	}
 	return w;
 }
+
+size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
+{
+	size_t nk = 0, i = 0;
+	const unsigned char *p = (const unsigned char *)buf;
+	while (i < n && nk < max) {
+		Key k;
+		memset(&k, 0, sizeof(k));
+		unsigned char c = p[i];
+		if (c == 0x1b) {
+			if (i + 1 >= n) {
+				i++;
+				continue;
+			}
+			if (p[i + 1] == '[') {
+				size_t j = i + 2;
+				int param = 0;
+				int got_param = 0;
+				while (j < n && ((p[j] >= '0' && p[j] <= '9') || p[j] == ';')) {
+					if (p[j] != ';' && !got_param)
+						param = param * 10 + (p[j] - '0');
+					else
+						got_param = 1;
+					j++;
+				}
+				if (j >= n) {
+					i = n;
+					continue;
+				}
+				switch (p[j]) {
+				case 'A': k.type = K_UP; break;
+				case 'B': k.type = K_DOWN; break;
+				case 'C': k.type = K_RIGHT; break;
+				case 'D': k.type = K_LEFT; break;
+				case 'H': k.type = K_HOME; break;
+				case 'F': k.type = K_END; break;
+				case '~':
+					switch (param) {
+					case 1: case 7: k.type = K_HOME; break;
+					case 4: case 8: k.type = K_END; break;
+					case 3: k.type = K_DELETE; break;
+					case 5: k.type = K_PGUP; break;
+					case 6: k.type = K_PGDN; break;
+					default: break;
+					}
+					break;
+				default:
+					break;
+				}
+				i = j + 1;
+			} else if (p[i + 1] == 'O' && i + 2 < n) {
+				switch (p[i + 2]) {
+				case 'A': k.type = K_UP; break;
+				case 'B': k.type = K_DOWN; break;
+				case 'C': k.type = K_RIGHT; break;
+				case 'D': k.type = K_LEFT; break;
+				case 'H': k.type = K_HOME; break;
+				case 'F': k.type = K_END; break;
+				default: break;
+				}
+				i += 3;
+			} else {
+				k.type = K_ALT;
+				k.c = p[i + 1];
+				i += 2;
+			}
+		} else if (c == '\r' || c == '\n') {
+			k.type = K_ENTER;
+			i++;
+		} else if (c == 0x7f || c == 0x08) {
+			k.type = K_BACKSPACE;
+			i++;
+		} else if (c == '\t') {
+			k.type = K_TAB;
+			i++;
+		} else if (c < 0x20) {
+			if (c >= 1 && c <= 26) {
+				k.type = K_CTRL;
+				k.c = 'a' + c - 1;
+			}
+			i++;
+		} else {
+			size_t len = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 1;
+			if (i + len > n)
+				len = n - i;
+			unsigned cp;
+			if (utf8_decode(buf + i, len, &cp) == len) {
+				k.type = K_CHAR;
+				memcpy(k.utf8, buf + i, len);
+				k.utf8[len] = '\0';
+			}
+			i += len;
+		}
+		if (k.type != K_NONE)
+			keys[nk++] = k;
+	}
+	return nk;
+}
