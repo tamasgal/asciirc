@@ -81,3 +81,73 @@ int ui_cols(void)
 {
 	return cols;
 }
+
+static size_t utf8_decode(const char *s, size_t n, unsigned *cp)
+{
+	const unsigned char *p = (const unsigned char *)s;
+	if (n == 0)
+		return 0;
+	if (p[0] < 0x80) {
+		*cp = p[0];
+		return 1;
+	}
+	size_t len;
+	unsigned v, min;
+	if ((p[0] & 0xe0) == 0xc0) {
+		len = 2;
+		v = p[0] & 0x1f;
+		min = 0x80;
+	} else if ((p[0] & 0xf0) == 0xe0) {
+		len = 3;
+		v = p[0] & 0x0f;
+		min = 0x800;
+	} else if ((p[0] & 0xf8) == 0xf0) {
+		len = 4;
+		v = p[0] & 0x07;
+		min = 0x10000;
+	} else {
+		return 0;
+	}
+	if (n < len)
+		return 0;
+	for (size_t i = 1; i < len; i++) {
+		if ((p[i] & 0xc0) != 0x80)
+			return 0;
+		v = (v << 6) | (p[i] & 0x3f);
+	}
+	if (v < min || v > 0x10ffff || (v >= 0xd800 && v < 0xe000))
+		return 0;
+	*cp = v;
+	return len;
+}
+
+static int cp_width(unsigned cp)
+{
+	if (cp < 0x80)
+		return 1;
+	int w = wcwidth((wchar_t)cp);
+	return w < 0 ? 1 : w;
+}
+
+static size_t next_char(const char *s, size_t n, int *width)
+{
+	unsigned cp;
+	size_t l = utf8_decode(s, n, &cp);
+	if (l == 0) {
+		*width = 1;
+		return 1;
+	}
+	*width = cp_width(cp);
+	return l;
+}
+
+static int str_width(const char *s, size_t n)
+{
+	int w = 0, cw;
+	size_t i = 0;
+	while (i < n) {
+		i += next_char(s + i, n - i, &cw);
+		w += cw;
+	}
+	return w;
+}
