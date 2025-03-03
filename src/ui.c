@@ -152,6 +152,338 @@ static int str_width(const char *s, size_t n)
 	return w;
 }
 
+static int put_trunc(Buf *out, const char *s, int maxw)
+{
+	int w = 0, cw;
+	size_t n = strlen(s), i = 0;
+	while (i < n) {
+		size_t l = next_char(s + i, n - i, &cw);
+		if (w + cw > maxw)
+			break;
+		if (s[i] == '\n')
+			buf_putc(out, ' ');
+		else
+			buf_append(out, s + i, l);
+		w += cw;
+		i += l;
+	}
+	return w;
+}
+
+static void put_spaces(Buf *out, int n)
+{
+	while (n-- > 0)
+		buf_putc(out, ' ');
+}
+
+static const char *nick_color(const char *nick)
+{
+	static const char *colors[] = { "32", "33", "34", "35", "36", "91", "92", "93", "94", "95", "96" };
+	unsigned h = 5381;
+	for (const char *p = nick; *p; p++)
+		h = h * 33 + (unsigned char)*p;
+	return colors[h % (sizeof(colors) / sizeof(colors[0]))];
+}
+
+typedef struct {
+	char **rows;
+	size_t n;
+	size_t cap;
+} RowList;
+
+static void rows_push(RowList *rl, char *row)
+{
+	if (rl->n == rl->cap) {
+		rl->cap = rl->cap ? rl->cap * 2 : 64;
+		rl->rows = xrealloc(rl->rows, rl->cap * sizeof(*rl->rows));
+	}
+	rl->rows[rl->n++] = row;
+}
+
+static void render_line(const Line *ln, int width, RowList *rl)
+{
+	Buf pre;
+	buf_init(&pre);
+	int prew = 0;
+	char ts[16];
+	struct tm tm;
+	localtime_r(&ln->ts, &tm);
+	strftime(ts, sizeof(ts), "%H:%M ", &tm);
+	buf_puts(&pre, ts);
+	prew += 6;
+
+	const char *nick = ln->nick ? ln->nick : "";
+	switch (ln->kind) {
+	case LINE_MSG:
+		if (ln->own)
+			buf_printf(&pre, "<\x1b[1m%s\x1b[0m> ", nick);
+		else if (ln->highlight)
+			buf_printf(&pre, "<\x1b[1;33m%s\x1b[0m> ", nick);
+		else
+			buf_printf(&pre, "<\x1b[%sm%s\x1b[0m> ", nick_color(nick), nick);
+		prew += str_width(nick, strlen(nick)) + 3;
+		break;
+	case LINE_ACTION:
+		buf_printf(&pre, "\x1b[1m * %s\x1b[0m ", nick);
+		prew += str_width(nick, strlen(nick)) + 4;
+		break;
+	case LINE_EVENT:
+		buf_puts(&pre, "\x1b[36m-!-\x1b[0m ");
+		prew += 4;
+		break;
+	case LINE_INFO:
+		buf_puts(&pre, "\x1b[1;34m-!-\x1b[0m ");
+		prew += 4;
+		break;
+	case LINE_ERROR:
+		buf_puts(&pre, "\x1b[1;31m-!-\x1b[0m ");
+		prew += 4;
+		break;
+	}
+
+	const char *style = "";
+	if (ln->kind == LINE_ERROR)
+		style = "\x1b[31m";
+	else if (ln->highlight)
+		style = "\x1b[1m";
+
+	const char *text = ln->text ? ln->text : "";
+	size_t len = strlen(text);
+	int indent = prew < width / 2 ? prew : 2;
+	int first_avail = width - prew;
+	int avail = width - indent;
+	if (first_avail < 1)
+		first_avail = 1;
+	if (avail < 1)
+		avail = 1;
+
+	size_t pos = 0, row_start = 0;
+	int w = 0, cur_avail = first_avail, first = 1;
+	for (;;) {
+		int brk = 0;
+		size_t row_end = pos, next_start = pos;
+		if (pos >= len) {
+			brk = 2;
+		} else if (text[pos] == '\n') {
+			brk = 1;
+			next_start = pos + 1;
+		} else {
+			int cw;
+			size_t l = next_char(text + pos, len - pos, &cw);
+			if (w + cw > cur_avail && pos > row_start) {
+				brk = 1;
+			} else {
+				w += cw;
+				pos += l;
+			}
+		}
+		if (!brk)
+			continue;
+
+		Buf row;
+		buf_init(&row);
+		if (first)
+			buf_append(&row, pre.data, pre.len);
+		else
+			put_spaces(&row, indent);
+		buf_puts(&row, style);
+		buf_append(&row, text + row_start, row_end - row_start);
+		buf_puts(&row, "\x1b[0m");
+		rows_push(rl, buf_steal(&row));
+		if (brk == 2)
+			break;
+
+		first = 0;
+		row_start = next_start;
+		pos = next_start;
+		w = 0;
+		cur_avail = avail;
+	}
+	buf_free(&pre);
+}
+
+static void draw_bar(Buf *out, int row, const char *content, int content_w)
+{
+	buf_printf(out, "\x1b[%d;1H\x1b[0;37;44m%s", row, content);
+	put_spaces(out, cols - content_w);
+	buf_puts(out, "\x1b[0m");
+}
+
+static const char *state_label(DdpState s)
+{
+	switch (s) {
+	case DDP_OFFLINE: return "offline";
+	case DDP_CONNECTING: return "connecting";
+	case DDP_LOGGING_IN: return "logging in";
+	default: return NULL;
+	}
+}
+
+static void draw_status(App *app, Buf *out, int row)
+{
+	Window *w = app->wins[app->cur];
+	Buf s;
+	buf_init(&s);
+	int sw = 0;
+	char tmp[64];
+	time_t now = time(NULL);
+	struct tm tm;
+	localtime_r(&now, &tm);
+	strftime(tmp, sizeof(tmp), " [%H:%M] ", &tm);
+	buf_puts(&s, tmp);
+	sw += (int)strlen(tmp);
+
+	const char *nick = app->rc.username ? app->rc.username : "?";
+	buf_puts(&s, "[");
+	sw += 1 + put_trunc(&s, nick, 20);
+	buf_puts(&s, "] ");
+	sw += 2;
+
+	snprintf(tmp, sizeof(tmp), "[%zu:", app->cur + 1);
+	buf_puts(&s, tmp);
+	sw += (int)strlen(tmp);
+	sw += put_trunc(&s, w->name, 30);
+	buf_puts(&s, "] ");
+	sw += 2;
+
+	const char *st = state_label(app->rc.state);
+	if (st) {
+		buf_printf(&s, "\x1b[1;31m[%s]\x1b[0;37;44m ", st);
+		sw += (int)strlen(st) + 3;
+	}
+
+	int any = 0;
+	for (size_t i = 0; i < app->nwins; i++) {
+		Activity a = app->wins[i]->activity;
+		if (i == app->cur || a == ACT_NONE)
+			continue;
+		if (!any) {
+			buf_puts(&s, "[Act: ");
+			sw += 6;
+		} else {
+			buf_putc(&s, ',');
+			sw++;
+		}
+		any = 1;
+		const char *col = a == ACT_HIGHLIGHT ? "1;35" : a == ACT_MSG ? "1;37" : "0;37";
+		snprintf(tmp, sizeof(tmp), "%zu", i + 1);
+		buf_printf(&s, "\x1b[%s;44m%s\x1b[0;37;44m", col, tmp);
+		sw += (int)strlen(tmp);
+	}
+	if (any) {
+		buf_puts(&s, "] ");
+		sw += 2;
+	}
+	if (w->scroll > 0) {
+		buf_puts(&s, "-- more --");
+		sw += 10;
+	}
+
+	if (sw > cols) {
+		/* too wide, draw a plain bar */
+		buf_free(&s);
+		buf_init(&s);
+		snprintf(tmp, sizeof(tmp), " [%zu]", app->cur + 1);
+		buf_puts(&s, tmp);
+		sw = (int)strlen(tmp);
+		sw += put_trunc(&s, w->name, cols - sw > 0 ? cols - sw : 0);
+	}
+	draw_bar(out, row, s.data, sw);
+	buf_free(&s);
+}
+
+static void draw_messages(Window *w, Buf *out, int top, int height)
+{
+	RowList all = { NULL, 0, 0 };
+	for (size_t i = w->nlines; i > 0 && all.n < (size_t)(height + w->scroll); i--) {
+		RowList one = { NULL, 0, 0 };
+		render_line(&w->lines[i - 1], cols, &one);
+		for (size_t k = one.n; k > 0; k--)
+			rows_push(&all, one.rows[k - 1]);
+		free(one.rows);
+	}
+	int total = (int)all.n;
+	if (w->scroll > 0 && total < height + w->scroll)
+		w->scroll = total > height ? total - height : 0;
+
+	int visible = total - w->scroll;
+	if (visible > height)
+		visible = height;
+	for (int r = 0; r < height; r++) {
+		buf_printf(out, "\x1b[%d;1H\x1b[0m", top + r);
+		if (r < visible) {
+			size_t idx = (size_t)(w->scroll + visible - 1 - r);
+			buf_puts(out, all.rows[idx]);
+		}
+		buf_puts(out, "\x1b[0m\x1b[K");
+	}
+	for (size_t i = 0; i < all.n; i++)
+		free(all.rows[i]);
+	free(all.rows);
+}
+
+static int draw_input(App *app, Buf *out, int row)
+{
+	Window *w = app->wins[app->cur];
+	Input *in = &app->input;
+	buf_printf(out, "\x1b[%d;1H\x1b[0m[", row);
+	int pw = 1 + put_trunc(out, w->name, cols / 3);
+	buf_puts(out, "] ");
+	pw += 2;
+
+	int avail = cols - pw - 1;
+	if (avail < 1)
+		avail = 1;
+	size_t start = in->cur;
+	int before = 0;
+	while (start > 0) {
+		size_t p = start - 1;
+		while (p > 0 && ((unsigned char)in->text[p] & 0xc0) == 0x80)
+			p--;
+		int cw = str_width(in->text + p, start - p);
+		if (before + cw > avail)
+			break;
+		before += cw;
+		start = p;
+	}
+	int used = before, cw;
+	size_t i = in->cur;
+	while (i < in->len) {
+		size_t l = next_char(in->text + i, in->len - i, &cw);
+		if (used + cw > avail)
+			break;
+		used += cw;
+		i += l;
+	}
+	buf_append(out, in->text + start, i - start);
+	buf_puts(out, "\x1b[K");
+	return pw + before + 1;
+}
+
+void ui_draw(App *app)
+{
+	if (rows < 4 || cols < 10)
+		return;
+	Window *w = app->wins[app->cur];
+	Buf out;
+	buf_init(&out);
+	buf_puts(&out, "\x1b[?25l");
+
+	Buf top;
+	buf_init(&top);
+	buf_putc(&top, ' ');
+	int tw = 1 + put_trunc(&top, w->topic && *w->topic ? w->topic : w->name, cols - 1);
+	draw_bar(&out, 1, top.data, tw);
+	buf_free(&top);
+
+	draw_messages(w, &out, 2, rows - 3);
+	draw_status(app, &out, rows - 1);
+	int col = draw_input(app, &out, rows);
+	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", rows, col);
+	write_all(out.data, out.len);
+	buf_free(&out);
+}
+
 size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 {
 	size_t nk = 0, i = 0;
