@@ -152,6 +152,34 @@ static int str_width(const char *s, size_t n)
 	return w;
 }
 
+char *ui_sanitize(const char *s)
+{
+	Buf b;
+	buf_init(&b);
+	size_t n = strlen(s);
+	size_t i = 0;
+	while (i < n) {
+		unsigned cp;
+		size_t l = utf8_decode(s + i, n - i, &cp);
+		if (l == 0) {
+			buf_putc(&b, '?');
+			i++;
+			continue;
+		}
+		if (cp == '\n')
+			buf_putc(&b, '\n');
+		else if (cp == '\t')
+			buf_putc(&b, ' ');
+		else if (cp < 0x20 || cp == 0x7f || (cp >= 0x80 && cp < 0xa0) || (cp >= 0x202a && cp <= 0x202e) ||
+			 (cp >= 0x2066 && cp <= 0x2069))
+			;
+		else
+			buf_append(&b, s + i, l);
+		i += l;
+	}
+	return buf_steal(&b);
+}
+
 static int put_trunc(Buf *out, const char *s, int maxw)
 {
 	int w = 0, cw;
