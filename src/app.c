@@ -1,0 +1,582 @@
+#include "app.h"
+#include "http.h"
+#include "ui.h"
+#include "util.h"
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_LINES 1000
+#define HISTORY_COUNT 20
+#define RECONNECT_MAX 30
+
+typedef struct {
+	char err[512];
+} Err;
+
+static void line_free(Line *ln)
+{
+	free(ln->nick);
+	free(ln->text);
+	free(ln->msgid);
+	free(ln->raw);
+}
+
+static Window *win_new(App *app, const char *rid, const char *name, char type)
+{
+	Window *w = xcalloc(1, sizeof(*w));
+	w->rid = rid ? xstrdup(rid) : NULL;
+	w->name = ui_sanitize(name);
+	w->type = type;
+	app->wins = xrealloc(app->wins, (app->nwins + 1) * sizeof(*app->wins));
+	app->wins[app->nwins++] = w;
+	app->dirty = 1;
+	return w;
+}
+
+static void win_free(Window *w)
+{
+	for (size_t i = 0; i < w->nlines; i++)
+		line_free(&w->lines[i]);
+	free(w->lines);
+	free(w->rid);
+	free(w->name);
+	free(w->topic);
+	free(w);
+}
+
+static size_t win_index(const App *app, const Window *w)
+{
+	for (size_t i = 0; i < app->nwins; i++)
+		if (app->wins[i] == w)
+			return i;
+	return 0;
+}
+
+static Window *win_by_rid(App *app, const char *rid)
+{
+	for (size_t i = 0; i < app->nwins; i++)
+		if (app->wins[i]->rid && strcmp(app->wins[i]->rid, rid) == 0)
+			return app->wins[i];
+	return NULL;
+}
+
+static Window *win_by_name(App *app, const char *name)
+{
+	const char *bare = name[0] == '#' ? name + 1 : name;
+	for (size_t i = 0; i < app->nwins; i++) {
+		const char *wn = app->wins[i]->name;
+		if (app->wins[i]->rid && str_casecmp(wn[0] == '#' ? wn + 1 : wn, bare) == 0)
+			return app->wins[i];
+	}
+	return NULL;
+}
+
+static Window *current(App *app)
+{
+	return app->wins[app->cur];
+}
+
+static void load_history(App *app, Window *w);
+
+static void win_append(App *app, Window *w, Line *ln, int notify)
+{
+	if (w->nlines == w->cap) {
+		w->cap = w->cap ? w->cap * 2 : 64;
+		w->lines = xrealloc(w->lines, w->cap * sizeof(*w->lines));
+	}
+	w->lines[w->nlines++] = *ln;
+	if (w->nlines > MAX_LINES) {
+		size_t drop = w->nlines - MAX_LINES;
+		for (size_t i = 0; i < drop; i++)
+			line_free(&w->lines[i]);
+		memmove(w->lines, w->lines + drop, MAX_LINES * sizeof(*w->lines));
+		w->nlines = MAX_LINES;
+	}
+	if (notify && !ln->own) {
+		Activity a = ACT_EVENT;
+		if (ln->highlight)
+			a = ACT_HIGHLIGHT;
+		else if (ln->kind == LINE_MSG || ln->kind == LINE_ACTION)
+			a = ACT_MSG;
+		if (w != current(app)) {
+			if (a > w->activity)
+				w->activity = a;
+		}
+		if (a >= ACT_MSG && w->rid)
+			w->needs_read = 1;
+	}
+	app->dirty = 1;
+}
+
+static void add_text(App *app, Window *w, LineKind kind, const char *fmt, va_list ap)
+{
+	char tmp[4096];
+	vsnprintf(tmp, sizeof(tmp), fmt, ap);
+	Line ln;
+	memset(&ln, 0, sizeof(ln));
+	ln.ts = time(NULL);
+	ln.kind = kind;
+	ln.text = ui_sanitize(tmp);
+	win_append(app, w ? w : app->wins[0], &ln, 0);
+}
+
+void app_info(App *app, Window *w, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	add_text(app, w, LINE_INFO, fmt, ap);
+	va_end(ap);
+}
+
+void app_error(App *app, Window *w, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	add_text(app, w, LINE_ERROR, fmt, ap);
+	va_end(ap);
+}
+
+static Line *find_line(Window *w, const char *msgid)
+{
+	for (size_t i = w->nlines; i > 0; i--)
+		if (w->lines[i - 1].msgid && strcmp(w->lines[i - 1].msgid, msgid) == 0)
+			return &w->lines[i - 1];
+	return NULL;
+}
+
+static void base_url(const Url *u, Buf *b)
+{
+	int def = strcmp(u->port, u->tls ? "443" : "80") == 0;
+	buf_printf(b, "%s://%s%s%s%s", u->tls ? "https" : "http", u->host, def ? "" : ":", def ? "" : u->port,
+		   u->path);
+}
+
+static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
+{
+	memset(ln, 0, sizeof(*ln));
+	const char *id = json_get_str(m, "_id");
+	const char *user = json_str(json_path(m, "u.username"));
+	const char *msg = json_get_str(m, "msg");
+	const char *t = json_get_str(m, "t");
+	if (!msg)
+		msg = "";
+
+	const Json *tsj = json_get(m, "ts");
+	ln->ts = time(NULL);
+	if (json_str(tsj))
+		ln->ts = parse_iso8601(json_str(tsj));
+	else if (json_get(tsj, "$date"))
+		ln->ts = (time_t)(json_num(json_get(tsj, "$date"), 0) / 1000);
+
+	Buf text;
+	buf_init(&text);
+	if (t && strcmp(t, "e2e") != 0) {
+		ln->kind = LINE_EVENT;
+		buf_printf(&text, "%s: %s", user, msg);
+	} else {
+		ln->kind = LINE_MSG;
+		if (t)
+			buf_puts(&text, "[encrypted message]");
+		else
+			buf_puts(&text, msg);
+	}
+
+	ln->nick = ui_sanitize(user);
+	ln->text = ui_sanitize(text.data ? text.data : "");
+	buf_free(&text);
+	ln->msgid = id ? xstrdup(id) : NULL;
+	ln->raw = xstrdup(msg);
+	ln->own = app->rc.username && strcmp(user, app->rc.username) == 0;
+	if (!ln->own && ln->kind == LINE_MSG)
+		ln->highlight = w->type == 'd';
+	return 0;
+}
+
+static void add_message(App *app, Window *w, const Json *m, int notify)
+{
+	Line ln;
+	if (msg_to_line(app, m, w, &ln) < 0)
+		return;
+	if (ln.msgid) {
+		Line *old = find_line(w, ln.msgid);
+		if (old) {
+			line_free(&ln);
+			return;
+		}
+	}
+	win_append(app, w, &ln, notify);
+}
+
+static const char *history_endpoint(char type)
+{
+	switch (type) {
+	case 'c': return "channels";
+	case 'p': return "groups";
+	case 'd': return "im";
+	default: return NULL;
+	}
+}
+
+static void load_history(App *app, Window *w)
+{
+	w->history_loaded = 1;
+	const char *ep = history_endpoint(w->type);
+	if (!w->rid || !ep)
+		return;
+	Buf path;
+	buf_init(&path);
+	buf_printf(&path, "/api/v1/%s.history?roomId=", ep);
+	url_encode(&path, w->rid);
+	buf_printf(&path, "&count=%d", HISTORY_COUNT);
+	Err e;
+	Json *j = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	buf_free(&path);
+	if (!j) {
+		app_error(app, w, "Could not load history: %s", e.err);
+		return;
+	}
+	const Json *msgs = json_get(j, "messages");
+	size_t n = json_len(msgs);
+	Line *hist = xcalloc(n ? n : 1, sizeof(*hist));
+	size_t nh = 0;
+	for (size_t i = n; i > 0; i--) {
+		Line ln;
+		if (msg_to_line(app, json_at(msgs, i - 1), w, &ln) < 0)
+			continue;
+		if (ln.msgid && find_line(w, ln.msgid)) {
+			line_free(&ln);
+			continue;
+		}
+		hist[nh++] = ln;
+	}
+	json_free(j);
+
+	size_t total = nh + w->nlines;
+	Line *merged = xcalloc(total ? total : 1, sizeof(*merged));
+	size_t a = 0, b = 0, k = 0;
+	while (a < nh || b < w->nlines) {
+		if (b >= w->nlines || (a < nh && hist[a].ts <= w->lines[b].ts))
+			merged[k++] = hist[a++];
+		else
+			merged[k++] = w->lines[b++];
+	}
+	free(hist);
+	free(w->lines);
+	w->lines = merged;
+	w->nlines = total;
+	w->cap = total ? total : 1;
+	app->dirty = 1;
+}
+
+void app_switch(App *app, size_t idx)
+{
+	if (idx >= app->nwins)
+		return;
+	app->cur = idx;
+	Window *w = current(app);
+	w->activity = ACT_NONE;
+	if (!w->history_loaded)
+		load_history(app, w);
+	app->dirty = 1;
+}
+
+static char *window_name(const char *name, char type)
+{
+	Buf b;
+	buf_init(&b);
+	if (type == 'c' || type == 'p')
+		buf_putc(&b, '#');
+	buf_puts(&b, name);
+	return buf_steal(&b);
+}
+
+static const char *sub_display_name(const Json *s)
+{
+	const char *fname = json_get_str(s, "fname");
+	if (json_get(s, "prid") && fname)
+		return fname;
+	const char *name = json_get_str(s, "name");
+	return name ? name : fname ? fname : "?";
+}
+
+static Window *open_window(App *app, const char *rid, const char *name, char type)
+{
+	Window *w = win_by_rid(app, rid);
+	if (w)
+		return w;
+	char *wn = window_name(name, type);
+	w = win_new(app, rid, wn, type);
+	free(wn);
+	if (type == 'd')
+		w->topic = xstrdup(w->name);
+	return w;
+}
+
+static int sub_cmp(const void *pa, const void *pb)
+{
+	const Subscription *a = pa, *b = pb;
+	return str_casecmp(a->name, b->name);
+}
+
+static void free_subs(App *app)
+{
+	for (size_t i = 0; i < app->nsubs; i++) {
+		free(app->subs[i].rid);
+		free(app->subs[i].name);
+	}
+	free(app->subs);
+	app->subs = NULL;
+	app->nsubs = 0;
+}
+
+static int load_subscriptions(App *app, int initial)
+{
+	Err e;
+	Json *j = rc_get(&app->rc, "/api/v1/subscriptions.get", e.err, sizeof(e.err));
+	if (!j) {
+		app_error(app, NULL, "Could not load subscriptions: %s", e.err);
+		return -1;
+	}
+	const Json *upd = json_get(j, "update");
+	size_t n = json_len(upd);
+	free_subs(app);
+	app->subs = xcalloc(n ? n : 1, sizeof(*app->subs));
+	for (size_t i = 0; i < n; i++) {
+		const Json *s = json_at(upd, i);
+		const char *rid = json_get_str(s, "rid");
+		const char *t = json_get_str(s, "t");
+		if (!rid || !t)
+			continue;
+		Subscription *sub = &app->subs[app->nsubs++];
+		sub->rid = xstrdup(rid);
+		sub->name = xstrdup(sub_display_name(s));
+		sub->type = t[0];
+		sub->open = json_get(s, "open") ? json_bool(json_get(s, "open")) : 1;
+		sub->unread = (int)json_num(json_get(s, "unread"), 0);
+		sub->mentions = (int)json_num(json_get(s, "userMentions"), 0);
+	}
+	json_free(j);
+	qsort(app->subs, app->nsubs, sizeof(*app->subs), sub_cmp);
+
+	for (size_t i = 0; i < app->nsubs; i++) {
+		Subscription *s = &app->subs[i];
+		if (!s->open || win_by_rid(app, s->rid))
+			continue;
+		Window *w = open_window(app, s->rid, s->name, s->type);
+		if (initial && (s->unread > 0 || s->mentions > 0)) {
+			w->activity = s->mentions > 0 || s->type == 'd' ? ACT_HIGHLIGHT : ACT_MSG;
+			w->needs_read = 1;
+		}
+	}
+	return 0;
+}
+
+static void on_stream(void *ctx, const char *coll, const char *event, const Json *args)
+{
+	App *app = ctx;
+	if (strcmp(coll, "stream-room-messages") == 0) {
+		const Json *m = json_at(args, 0);
+		const char *rid = json_get_str(m, "rid");
+		if (!rid)
+			return;
+		Window *w = win_by_rid(app, rid);
+		if (!w) {
+			load_subscriptions(app, 0);
+			w = win_by_rid(app, rid);
+			if (!w)
+				return;
+		}
+		add_message(app, w, m, 1);
+	} else if (strcmp(coll, "stream-notify-user") == 0) {
+		const char *slash = strrchr(event, '/');
+		if (!slash)
+			return;
+		const char *action = json_str(json_at(args, 0));
+		const Json *obj = json_at(args, 1);
+		if (strcmp(slash, "/subscriptions-changed") == 0) {
+			const char *rid = json_get_str(obj, "rid");
+			if (action && strcmp(action, "removed") != 0 && rid && !win_by_rid(app, rid) &&
+			    json_bool(json_get(obj, "open")))
+				load_subscriptions(app, 0);
+		} else if (strcmp(slash, "/rooms-changed") == 0) {
+			const char *id = json_get_str(obj, "_id");
+			Window *w = id ? win_by_rid(app, id) : NULL;
+			const char *topic = json_get_str(obj, "topic");
+			if (w && topic && (!w->topic || strcmp(w->topic, topic) != 0)) {
+				free(w->topic);
+				w->topic = ui_sanitize(topic);
+				app->dirty = 1;
+			}
+		}
+	}
+}
+
+static void on_status(void *ctx, int is_error, const char *text)
+{
+	App *app = ctx;
+	if (is_error)
+		app_error(app, NULL, "%s", text);
+	else
+		app_info(app, NULL, "%s", text);
+}
+
+static void on_ready(void *ctx)
+{
+	App *app = ctx;
+	app->reconnect_delay = 0;
+	app_info(app, NULL, "Realtime conection established");
+	if (app->ever_ready) {
+		load_subscriptions(app, 0);
+		for (size_t i = 0; i < app->nwins; i++)
+			if (app->wins[i]->history_loaded)
+				load_history(app, app->wins[i]);
+	}
+	app->ever_ready = 1;
+}
+
+static const RcHandlers handlers = { on_stream, on_status, on_ready };
+
+static void schedule_reconnect(App *app)
+{
+	app->reconnect_delay = app->reconnect_delay ? app->reconnect_delay * 2 : 2;
+	if (app->reconnect_delay > RECONNECT_MAX)
+		app->reconnect_delay = RECONNECT_MAX;
+	app->reconnect_at = now_ms() + app->reconnect_delay * 1000LL;
+	app_info(app, NULL, "Reconnecting in %d seconds", app->reconnect_delay);
+}
+
+void app_ddp_tick(App *app)
+{
+	if (app->rc.state != DDP_OFFLINE || app->reconnect_at < 0 || now_ms() < app->reconnect_at)
+		return;
+	Err e;
+	app_info(app, NULL, "Connecting to realtime API");
+	app->dirty = 1;
+	if (rc_ddp_connect(&app->rc, e.err, sizeof(e.err)) < 0) {
+		app_error(app, NULL, "Realtime connection failed: %s", e.err);
+		schedule_reconnect(app);
+	}
+}
+
+void app_ddp_readable(App *app)
+{
+	if (rc_ddp_process(&app->rc, &handlers, app) < 0) {
+		app_error(app, NULL, "Realtime connection lost");
+		schedule_reconnect(app);
+	}
+	app->dirty = 1;
+}
+
+void app_init(App *app)
+{
+	app->wins = NULL;
+	app->nwins = 0;
+	app->cur = 0;
+	app->subs = NULL;
+	app->nsubs = 0;
+	memset(&app->input, 0, sizeof(app->input));
+	app->quit = 0;
+	app->dirty = 1;
+	app->ever_ready = 0;
+	app->reconnect_at = 0;
+	app->reconnect_delay = 0;
+	Window *st = win_new(app, NULL, "(status)", 0);
+	st->history_loaded = 1;
+}
+
+void app_free(App *app)
+{
+	for (size_t i = 0; i < app->nwins; i++)
+		win_free(app->wins[i]);
+	free(app->wins);
+	free_subs(app);
+	for (int i = 0; i < app->input.nhistory; i++)
+		free(app->input.history[i]);
+}
+
+void app_start(App *app)
+{
+	Buf b;
+	buf_init(&b);
+	base_url(&app->rc.url, &b);
+	free(app->wins[0]->topic);
+	app->wins[0]->topic = xstrdup(b.data);
+	app_info(app, NULL, "Logged in to %s as %s", b.data, app->rc.username);
+	buf_free(&b);
+	app_info(app, NULL, "Type /help for a list of commands, Alt+1..9 or Ctrl+N/P to switch windows");
+	if (load_subscriptions(app, 1) == 0) {
+		app_info(app, NULL, "%zu rooms, %zu windows open", app->nsubs, app->nwins - 1);
+	}
+	app_ddp_tick(app);
+}
+
+static int send_text(App *app, Window *w, const char *text)
+{
+	if (!w->rid) {
+		app_error(app, w, "Not in a room, use /join or /query, or switch windows with Alt+number");
+		return -1;
+	}
+	Buf body;
+	buf_init(&body);
+	buf_puts(&body, "{\"message\":{\"rid\":");
+	buf_json_str(&body, w->rid);
+	buf_puts(&body, ",\"msg\":");
+	buf_json_str(&body, text);
+	buf_puts(&body, "}}");
+	Err e;
+	Json *j = rc_post(&app->rc, "/api/v1/chat.sendMessage", body.data, e.err, sizeof(e.err));
+	buf_free(&body);
+	if (!j) {
+		app_error(app, w, "Message not sent: %s", e.err);
+		return -1;
+	}
+	json_free(j);
+	return 0;
+}
+
+static void cmd_help(App *app)
+{
+	static const char *help[] = {
+		"/quit                   exit",
+		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
+		"      PgUp/PgDn scroll, // sends a leading slash",
+	};
+	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
+		app_info(app, current(app), "%s", help[i]);
+}
+
+static void run_command(App *app, const char *line)
+{
+	char cmd[32];
+	size_t n = strcspn(line, " ");
+	if (n >= sizeof(cmd))
+		n = sizeof(cmd) - 1;
+	for (size_t i = 0; i < n; i++)
+		cmd[i] = (char)tolower((unsigned char)line[i]);
+	cmd[n] = '\0';
+	const char *arg = line + strcspn(line, " ");
+	while (*arg == ' ')
+		arg++;
+
+	if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
+		app->quit = 1;
+	else if (strcmp(cmd, "help") == 0)
+		cmd_help(app);
+	else
+		app_error(app, current(app), "Unknown command: /%s (see /help)", cmd);
+}
+
+void app_submit(App *app, const char *line)
+{
+	if (!*line)
+		return;
+	if (line[0] == '/' && line[1] != '/')
+		run_command(app, line + 1);
+	else
+		send_text(app, current(app), line[0] == '/' ? line + 1 : line);
+	app->dirty = 1;
+}

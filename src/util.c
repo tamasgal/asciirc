@@ -148,3 +148,38 @@ void buf_json_str(Buf *b, const char *s)
 	}
 	buf_putc(b, '"');
 }
+
+long long now_ms(void)
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+static long long days_from_civil(int y, int m, int d)
+{
+	y -= m <= 2;
+	long long era = (y >= 0 ? y : y - 399) / 400;
+	int yoe = y - (int)(era * 400);
+	int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + doe - 719468;
+}
+
+time_t parse_iso8601(const char *s)
+{
+	int y, mo, d, h = 0, mi = 0, sec = 0;
+	if (!s || sscanf(s, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &sec) < 3)
+		return 0;
+	long long days = days_from_civil(y, mo, d);
+	return (time_t)(days * 86400 + h * 3600 + mi * 60 + sec);
+}
+
+int str_casecmp(const char *a, const char *b)
+{
+	for (;; a++, b++) {
+		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
+		if (ca != cb || !ca)
+			return ca - cb;
+	}
+}
