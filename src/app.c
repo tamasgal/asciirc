@@ -162,6 +162,8 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 	const char *user = json_str(json_path(m, "u.username"));
 	const char *msg = json_get_str(m, "msg");
 	const char *t = json_get_str(m, "t");
+	if (!user)
+		user = "?";
 	if (!msg)
 		msg = "";
 
