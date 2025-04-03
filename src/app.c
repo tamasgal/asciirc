@@ -155,6 +155,44 @@ static void base_url(const Url *u, Buf *b)
 		   u->path);
 }
 
+static void describe_event(Buf *b, const char *t, const char *user, const char *msg)
+{
+	if (strcmp(t, "uj") == 0 || strcmp(t, "ujt") == 0)
+		buf_printf(b, "%s has joined", user);
+	else if (strcmp(t, "ul") == 0 || strcmp(t, "ult") == 0)
+		buf_printf(b, "%s has left", user);
+	else if (strcmp(t, "au") == 0 || strcmp(t, "added-user-to-team") == 0)
+		buf_printf(b, "%s added %s", user, msg);
+	else if (strcmp(t, "ru") == 0 || strcmp(t, "removed-user-from-team") == 0)
+		buf_printf(b, "%s removed %s", user, msg);
+	else if (strcmp(t, "r") == 0)
+		buf_printf(b, "%s changed the room name to %s", user, msg);
+	else if (strcmp(t, "room_changed_topic") == 0)
+		buf_printf(b, "%s changed the topic to: %s", user, msg);
+	else if (strcmp(t, "room_changed_description") == 0)
+		buf_printf(b, "%s changed the description to: %s", user, msg);
+	else if (strcmp(t, "room_changed_announcement") == 0)
+		buf_printf(b, "%s changed the announcement to: %s", user, msg);
+	else if (strcmp(t, "user-muted") == 0)
+		buf_printf(b, "%s muted %s", user, msg);
+	else if (strcmp(t, "user-unmuted") == 0)
+		buf_printf(b, "%s unmuted %s", user, msg);
+	else if (strcmp(t, "subscription-role-added") == 0)
+		buf_printf(b, "%s was given a role by %s", msg, user);
+	else if (strcmp(t, "subscription-role-removed") == 0)
+		buf_printf(b, "%s lost a role, removed by %s", msg, user);
+	else if (strcmp(t, "message_pinned") == 0)
+		buf_printf(b, "%s pinned a message", user);
+	else if (strcmp(t, "discussion-created") == 0)
+		buf_printf(b, "%s started a discussion: %s", user, msg);
+	else if (strcmp(t, "rm") == 0)
+		buf_printf(b, "message by %s was removed", user);
+	else if (*msg)
+		buf_printf(b, "%s: %s (%s)", user, msg, t);
+	else
+		buf_printf(b, "%s: %s", user, t);
+}
+
 static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 {
 	memset(ln, 0, sizeof(*ln));
@@ -178,7 +216,7 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 	buf_init(&text);
 	if (t && strcmp(t, "e2e") != 0) {
 		ln->kind = LINE_EVENT;
-		buf_printf(&text, "%s: %s", user, msg);
+		describe_event(&text, t, user, msg);
 	} else {
 		ln->kind = LINE_MSG;
 		if (t)
