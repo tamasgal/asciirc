@@ -193,6 +193,39 @@ static void describe_event(Buf *b, const char *t, const char *user, const char *
 		buf_printf(b, "%s: %s", user, t);
 }
 
+static void describe_attachments(App *app, Buf *b, const Json *m)
+{
+	const Json *atts = json_get(m, "attachments");
+	for (size_t i = 0; i < json_len(atts); i++) {
+		const Json *a = json_at(atts, i);
+		const char *title = json_get_str(a, "title");
+		const char *link = json_get_str(a, "title_link");
+		const char *desc = json_get_str(a, "description");
+		const char *text = json_get_str(a, "text");
+		const char *author = json_get_str(a, "author_name");
+		if (b->len > 0)
+			buf_putc(b, '\n');
+		if (link) {
+			buf_printf(b, "[file] %s ", title ? title : "");
+			if (link[0] == '/')
+				base_url(&app->rc.url, b);
+			buf_puts(b, link);
+			if (desc && *desc)
+				buf_printf(b, " %s", desc);
+		} else if (author && text) {
+			buf_printf(b, "[quote] %s: %s", author, text);
+		} else {
+			buf_puts(b, "[attachment]");
+			if (title)
+				buf_printf(b, " %s", title);
+			if (text)
+				buf_printf(b, " %s", text);
+			if (desc)
+				buf_printf(b, " %s", desc);
+		}
+	}
+}
+
 static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 {
 	memset(ln, 0, sizeof(*ln));
@@ -223,6 +256,16 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 			buf_puts(&text, "[encrypted message]");
 		else
 			buf_puts(&text, msg);
+		size_t before = text.len;
+		Buf att;
+		buf_init(&att);
+		describe_attachments(app, &att, m);
+		if (att.len) {
+			if (before > 0 && msg[0])
+				buf_putc(&text, '\n');
+			buf_append(&text, att.data, att.len);
+		}
+		buf_free(&att);
 	}
 
 	ln->nick = ui_sanitize(user);
