@@ -193,6 +193,17 @@ static void describe_event(Buf *b, const char *t, const char *user, const char *
 		buf_printf(b, "%s: %s", user, t);
 }
 
+static int mentions_me(const Json *m, const char *me)
+{
+	const Json *mentions = json_get(m, "mentions");
+	for (size_t i = 0; i < json_len(mentions); i++) {
+		const char *u = json_get_str(json_at(mentions, i), "username");
+		if (u && (strcmp(u, "all") == 0 || strcmp(u, "here") == 0 || (me && strcmp(u, me) == 0)))
+			return 1;
+	}
+	return 0;
+}
+
 static void describe_attachments(App *app, Buf *b, const Json *m)
 {
 	const Json *atts = json_get(m, "attachments");
@@ -275,7 +286,7 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 	ln->raw = xstrdup(msg);
 	ln->own = app->rc.username && strcmp(user, app->rc.username) == 0;
 	if (!ln->own && ln->kind == LINE_MSG)
-		ln->highlight = w->type == 'd';
+		ln->highlight = w->type == 'd' || mentions_me(m, app->rc.username);
 	return 0;
 }
 
