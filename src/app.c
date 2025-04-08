@@ -277,6 +277,8 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 			buf_append(&text, att.data, att.len);
 		}
 		buf_free(&att);
+		if (json_get(m, "editedAt"))
+			buf_puts(&text, " (edited)");
 	}
 
 	ln->nick = ui_sanitize(user);
@@ -298,6 +300,16 @@ static void add_message(App *app, Window *w, const Json *m, int notify)
 	if (ln.msgid) {
 		Line *old = find_line(w, ln.msgid);
 		if (old) {
+			if (strcmp(old->raw, ln.raw) != 0 || ln.kind != old->kind) {
+				char *tmp = old->text;
+				old->text = ln.text;
+				ln.text = tmp;
+				tmp = old->raw;
+				old->raw = ln.raw;
+				ln.raw = tmp;
+				old->kind = ln.kind;
+				app->dirty = 1;
+			}
 			line_free(&ln);
 			return;
 		}
