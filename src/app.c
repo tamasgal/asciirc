@@ -263,6 +263,8 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 		describe_event(&text, t, user, msg);
 	} else {
 		ln->kind = LINE_MSG;
+		if (json_get(m, "tmid"))
+			buf_puts(&text, "[thread] ");
 		if (t)
 			buf_puts(&text, "[encrypted message]");
 		else
