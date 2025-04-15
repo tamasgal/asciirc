@@ -285,8 +285,8 @@ static void render_line(const Line *ln, int width, RowList *rl)
 	if (avail < 1)
 		avail = 1;
 
-	size_t pos = 0, row_start = 0;
-	int w = 0, cur_avail = first_avail, first = 1;
+	size_t pos = 0, row_start = 0, last_space = 0;
+	int have_space = 0, w = 0, cur_avail = first_avail, first = 1;
 	for (;;) {
 		int brk = 0;
 		size_t row_end = pos, next_start = pos;
@@ -300,7 +300,15 @@ static void render_line(const Line *ln, int width, RowList *rl)
 			size_t l = next_char(text + pos, len - pos, &cw);
 			if (w + cw > cur_avail && pos > row_start) {
 				brk = 1;
+				if (have_space) {
+					row_end = last_space;
+					next_start = last_space + 1;
+				}
 			} else {
+				if (text[pos] == ' ') {
+					last_space = pos;
+					have_space = 1;
+				}
 				w += cw;
 				pos += l;
 			}
@@ -324,6 +332,7 @@ static void render_line(const Line *ln, int width, RowList *rl)
 		first = 0;
 		row_start = next_start;
 		pos = next_start;
+		have_space = 0;
 		w = 0;
 		cur_avail = avail;
 	}
