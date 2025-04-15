@@ -654,6 +654,38 @@ void ui_input_set(Input *in, const char *s)
 	in->cur = n;
 }
 
+void ui_input_push_history(Input *in, const char *s)
+{
+	if (!*s)
+		return;
+	if (in->nhistory > 0 && strcmp(in->history[in->nhistory - 1], s) == 0) {
+		in->hpos = in->nhistory;
+		return;
+	}
+	if (in->nhistory == HISTORY_MAX) {
+		free(in->history[0]);
+		memmove(in->history, in->history + 1, (HISTORY_MAX - 1) * sizeof(*in->history));
+		in->nhistory--;
+	}
+	in->history[in->nhistory++] = xstrdup(s);
+	in->hpos = in->nhistory;
+	free(history_draft);
+	history_draft = NULL;
+}
+
+static void history_move(Input *in, int dir)
+{
+	int np = in->hpos + dir;
+	if (np < 0 || np > in->nhistory)
+		return;
+	if (in->hpos == in->nhistory) {
+		free(history_draft);
+		history_draft = xstrdup(in->text);
+	}
+	in->hpos = np;
+	ui_input_set(in, np == in->nhistory ? (history_draft ? history_draft : "") : in->history[np]);
+}
+
 int ui_input_key(Input *in, const Key *k)
 {
 	switch (k->type) {
@@ -685,6 +717,12 @@ int ui_input_key(Input *in, const Key *k)
 		return 1;
 	case K_END:
 		in->cur = in->len;
+		return 1;
+	case K_UP:
+		history_move(in, -1);
+		return 1;
+	case K_DOWN:
+		history_move(in, 1);
 		return 1;
 	case K_CTRL:
 		switch (k->c) {

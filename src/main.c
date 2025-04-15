@@ -60,7 +60,9 @@ static void handle_key(App *app, const Key *k)
 	switch (k->type) {
 	case K_ENTER: {
 		char *line = xstrdup(app->input.text);
+		ui_input_push_history(&app->input, line);
 		ui_input_set(&app->input, "");
+		app->input.hpos = app->input.nhistory;
 		w->scroll = 0;
 		app_submit(app, line);
 		free(line);
