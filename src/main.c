@@ -125,6 +125,8 @@ static int run(App *app)
 		if (r < 0 && errno != EINTR)
 			return -1;
 
+		if (ui_check_resize())
+			app->dirty = 1;
 		if (r > 0 && (fds[0].revents & (POLLIN | POLLHUP))) {
 			char buf[4096];
 			ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));

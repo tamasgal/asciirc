@@ -17,6 +17,12 @@ static volatile sig_atomic_t resized;
 static int rows = 24, cols = 80;
 static char *history_draft;
 
+static void on_winch(int sig)
+{
+	(void)sig;
+	resized = 1;
+}
+
 static void update_size(void)
 {
 	struct winsize ws;
@@ -56,6 +62,12 @@ int ui_init(void)
 		return -1;
 	term_active = 1;
 
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = on_winch;
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGWINCH, &sa, NULL);
+
 	update_size();
 	const char *init = "\x1b[?1049h\x1b[?7l\x1b[H\x1b[2J";
 	write_all(init, strlen(init));
@@ -70,6 +82,15 @@ void ui_shutdown(void)
 	write_all(fini, strlen(fini));
 	tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
 	term_active = 0;
+}
+
+int ui_check_resize(void)
+{
+	if (!resized)
+		return 0;
+	resized = 0;
+	update_size();
+	return 1;
 }
 
 int ui_rows(void)
