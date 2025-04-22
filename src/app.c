@@ -424,9 +424,17 @@ static Window *open_window(App *app, const char *rid, const char *name, char typ
 	return w;
 }
 
+static int type_rank(char t)
+{
+	return t == 'c' || t == 'p' ? 0 : t == 'd' ? 1 : 2;
+}
+
 static int sub_cmp(const void *pa, const void *pb)
 {
 	const Subscription *a = pa, *b = pb;
+	int ra = type_rank(a->type), rb = type_rank(b->type);
+	if (ra != rb)
+		return ra - rb;
 	return str_casecmp(a->name, b->name);
 }
 
