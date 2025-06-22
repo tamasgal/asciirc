@@ -491,6 +491,28 @@ static int load_subscriptions(App *app, int initial)
 	return 0;
 }
 
+static void load_topics(App *app)
+{
+	Err e;
+	Json *j = rc_get(&app->rc, "/api/v1/rooms.get", e.err, sizeof(e.err));
+	if (!j) {
+		app_error(app, NULL, "Could not load room topics: %s", e.err);
+		return;
+	}
+	const Json *upd = json_get(j, "update");
+	for (size_t i = 0; i < json_len(upd); i++) {
+		const Json *r = json_at(upd, i);
+		const char *id = json_get_str(r, "_id");
+		const char *topic = json_get_str(r, "topic");
+		Window *w = id ? win_by_rid(app, id) : NULL;
+		if (w && topic) {
+			free(w->topic);
+			w->topic = ui_sanitize(topic);
+		}
+	}
+	json_free(j);
+}
+
 static void on_stream(void *ctx, const char *coll, const char *event, const Json *args)
 {
 	App *app = ctx;
@@ -625,6 +647,7 @@ void app_start(App *app)
 	buf_free(&b);
 	app_info(app, NULL, "Type /help for a list of commands, Alt+1..9 or Ctrl+N/P to switch windows");
 	if (load_subscriptions(app, 1) == 0) {
+		load_topics(app);
 		app_info(app, NULL, "%zu rooms, %zu windows open", app->nsubs, app->nwins - 1);
 	}
 	app_ddp_tick(app);
