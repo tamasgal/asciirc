@@ -90,7 +90,7 @@ static void win_remove(App *app, Window *w)
 	win_free(w);
 	memmove(app->wins + idx, app->wins + idx + 1, (app->nwins - idx - 1) * sizeof(*app->wins));
 	app->nwins--;
-	if (app->cur >= idx)
+	if (app->cur >= idx && app->cur > 0)
 		app->cur--;
 	Window *c = current(app);
 	c->activity = ACT_NONE;
