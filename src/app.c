@@ -513,6 +513,17 @@ static void load_topics(App *app)
 	json_free(j);
 }
 
+static Subscription *sub_by_name(App *app, const char *name, int want_dm)
+{
+	const char *bare = name[0] == '#' ? name + 1 : name;
+	for (size_t i = 0; i < app->nsubs; i++) {
+		Subscription *s = &app->subs[i];
+		if ((s->type == 'd') == want_dm && str_casecmp(s->name, bare) == 0)
+			return s;
+	}
+	return NULL;
+}
+
 static void on_stream(void *ctx, const char *coll, const char *event, const Json *args)
 {
 	App *app = ctx;
@@ -677,9 +688,70 @@ static int send_text(App *app, Window *w, const char *text)
 	return 0;
 }
 
+static void cmd_join(App *app, const char *arg)
+{
+	if (!*arg) {
+		app_error(app, current(app), "Usage: /join #channel");
+		return;
+	}
+	Window *w = win_by_name(app, arg);
+	if (w && w->type != 'd') {
+		app_switch(app, win_index(app, w));
+		return;
+	}
+	Subscription *s = sub_by_name(app, arg, 0);
+	if (s) {
+		w = open_window(app, s->rid, s->name, s->type);
+		app_switch(app, win_index(app, w));
+		return;
+	}
+	const char *bare = arg[0] == '#' ? arg + 1 : arg;
+	Buf path;
+	buf_init(&path);
+	buf_puts(&path, "/api/v1/channels.info?roomName=");
+	url_encode(&path, bare);
+	Err e;
+	Json *info = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	buf_free(&path);
+	if (!info) {
+		app_error(app, current(app), "Cannot join %s: %s", arg, e.err);
+		return;
+	}
+	const char *rid = json_str(json_path(info, "channel._id"));
+	const char *name = json_str(json_path(info, "channel.name"));
+	const char *topic = json_str(json_path(info, "channel.topic"));
+	if (!rid) {
+		app_error(app, current(app), "Cannot join %s: no such channel", arg);
+		json_free(info);
+		return;
+	}
+	Buf body;
+	buf_init(&body);
+	buf_puts(&body, "{\"roomId\":");
+	buf_json_str(&body, rid);
+	buf_puts(&body, "}");
+	Json *j = rc_post(&app->rc, "/api/v1/channels.join", body.data, e.err, sizeof(e.err));
+	buf_free(&body);
+	if (!j) {
+		app_error(app, current(app), "Cannot join %s: %s", arg, e.err);
+		json_free(info);
+		return;
+	}
+	json_free(j);
+	w = open_window(app, rid, name ? name : bare, 'c');
+	if (topic) {
+		free(w->topic);
+		w->topic = ui_sanitize(topic);
+	}
+	json_free(info);
+	app_switch(app, win_index(app, w));
+	load_subscriptions(app, 0);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
+		"/join #channel          join a channel or switch to it",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -701,7 +773,9 @@ static void run_command(App *app, const char *line)
 	while (*arg == ' ')
 		arg++;
 
-	if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
+	if (strcmp(cmd, "join") == 0 || strcmp(cmd, "j") == 0)
+		cmd_join(app, arg);
+	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
 		cmd_help(app);
