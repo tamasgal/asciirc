@@ -82,6 +82,23 @@ static Window *current(App *app)
 
 static void load_history(App *app, Window *w);
 
+static void win_remove(App *app, Window *w)
+{
+	size_t idx = win_index(app, w);
+	if (idx == 0)
+		return;
+	win_free(w);
+	memmove(app->wins + idx, app->wins + idx + 1, (app->nwins - idx - 1) * sizeof(*app->wins));
+	app->nwins--;
+	if (app->cur >= idx)
+		app->cur--;
+	Window *c = current(app);
+	c->activity = ACT_NONE;
+	if (!c->history_loaded)
+		load_history(app, c);
+	app->dirty = 1;
+}
+
 static void win_append(App *app, Window *w, Line *ln, int notify)
 {
 	if (w->nlines == w->cap) {
@@ -688,6 +705,36 @@ static int send_text(App *app, Window *w, const char *text)
 	return 0;
 }
 
+static void post_room_action(App *app, Window *w, const char *action, const char *extra_key, const char *extra_val)
+{
+	const char *ep = history_endpoint(w->type);
+	if (!ep) {
+		app_error(app, w, "Not supported for this window");
+		return;
+	}
+	char path[128];
+	snprintf(path, sizeof(path), "/api/v1/%s.%s", ep, action);
+	Buf body;
+	buf_init(&body);
+	buf_puts(&body, "{\"roomId\":");
+	buf_json_str(&body, w->rid);
+	if (extra_key) {
+		buf_printf(&body, ",\"%s\":", extra_key);
+		buf_json_str(&body, extra_val);
+	}
+	buf_puts(&body, "}");
+	Err e;
+	Json *j = rc_post(&app->rc, path, body.data, e.err, sizeof(e.err));
+	buf_free(&body);
+	if (!j) {
+		app_error(app, w, "%s", e.err);
+		return;
+	}
+	json_free(j);
+	if (strcmp(action, "leave") == 0 || strcmp(action, "close") == 0)
+		win_remove(app, w);
+}
+
 static void cmd_join(App *app, const char *arg)
 {
 	if (!*arg) {
@@ -748,10 +795,36 @@ static void cmd_join(App *app, const char *arg)
 	load_subscriptions(app, 0);
 }
 
+static Window *target_window(App *app, const char *arg)
+{
+	if (!*arg)
+		return current(app);
+	Window *w = win_by_name(app, arg);
+	if (!w)
+		app_error(app, current(app), "No window named %s", arg);
+	return w;
+}
+
+static void cmd_part(App *app, const char *arg, const char *action)
+{
+	Window *w = target_window(app, arg);
+	if (!w)
+		return;
+	if (!w->rid) {
+		app_error(app, w, "Cannot %s the status window", action);
+		return;
+	}
+	if (w->type == 'd' && strcmp(action, "leave") == 0)
+		action = "close";
+	post_room_action(app, w, action, NULL, NULL);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
 		"/join #channel          join a channel or switch to it",
+		"/part [#channel]        leave a channel (closes a direct message)",
+		"/close [#channel]       hide a room without leaving it",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -775,6 +848,10 @@ static void run_command(App *app, const char *line)
 
 	if (strcmp(cmd, "join") == 0 || strcmp(cmd, "j") == 0)
 		cmd_join(app, arg);
+	else if (strcmp(cmd, "part") == 0 || strcmp(cmd, "leave") == 0)
+		cmd_part(app, arg, "leave");
+	else if (strcmp(cmd, "close") == 0 || strcmp(cmd, "wc") == 0)
+		cmd_part(app, arg, "close");
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
