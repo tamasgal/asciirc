@@ -735,6 +735,35 @@ static void post_room_action(App *app, Window *w, const char *action, const char
 		win_remove(app, w);
 }
 
+static Window *query_window(App *app, const char *user)
+{
+	const char *bare = user[0] == '@' ? user + 1 : user;
+	Window *w = win_by_name(app, bare);
+	if (w && w->type == 'd')
+		return w;
+	Subscription *s = sub_by_name(app, bare, 1);
+	if (s)
+		return open_window(app, s->rid, s->name, 'd');
+	Buf body;
+	buf_init(&body);
+	buf_puts(&body, "{\"username\":");
+	buf_json_str(&body, bare);
+	buf_puts(&body, "}");
+	Err e;
+	Json *j = rc_post(&app->rc, "/api/v1/im.create", body.data, e.err, sizeof(e.err));
+	buf_free(&body);
+	if (!j) {
+		app_error(app, NULL, "Could not open conversation with %s: %s", bare, e.err);
+		return NULL;
+	}
+	const char *rid = json_str(json_path(j, "room._id"));
+	if (!rid)
+		rid = json_str(json_path(j, "room.rid"));
+	w = rid ? open_window(app, rid, bare, 'd') : NULL;
+	json_free(j);
+	return w;
+}
+
 static void cmd_join(App *app, const char *arg)
 {
 	if (!*arg) {
@@ -819,12 +848,34 @@ static void cmd_part(App *app, const char *arg, const char *action)
 	post_room_action(app, w, action, NULL, NULL);
 }
 
+static void cmd_query(App *app, const char *arg)
+{
+	char user[256];
+	const char *rest = "";
+	size_t n = strcspn(arg, " ");
+	if (n == 0 || n >= sizeof(user)) {
+		app_error(app, current(app), "Usage: /query user [message]");
+		return;
+	}
+	memcpy(user, arg, n);
+	user[n] = '\0';
+	if (arg[n])
+		rest = arg + n + 1;
+	Window *w = query_window(app, user);
+	if (!w)
+		return;
+	app_switch(app, win_index(app, w));
+	if (*rest)
+		send_text(app, w, rest);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
 		"/join #channel          join a channel or switch to it",
 		"/part [#channel]        leave a channel (closes a direct message)",
 		"/close [#channel]       hide a room without leaving it",
+		"/query user [message]   open a direct message",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -852,6 +903,8 @@ static void run_command(App *app, const char *line)
 		cmd_part(app, arg, "leave");
 	else if (strcmp(cmd, "close") == 0 || strcmp(cmd, "wc") == 0)
 		cmd_part(app, arg, "close");
+	else if (strcmp(cmd, "query") == 0 || strcmp(cmd, "q") == 0)
+		cmd_query(app, arg);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
