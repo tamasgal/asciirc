@@ -397,15 +397,39 @@ static void load_history(App *app, Window *w)
 	app->dirty = 1;
 }
 
+static void mark_read(App *app, Window *w)
+{
+	w->needs_read = 0;
+	if (!w->rid)
+		return;
+	Buf body;
+	buf_init(&body);
+	buf_puts(&body, "{\"rid\":");
+	buf_json_str(&body, w->rid);
+	buf_puts(&body, "}");
+	Err e;
+	Json *j = rc_post(&app->rc, "/api/v1/subscriptions.read", body.data, e.err, sizeof(e.err));
+	buf_free(&body);
+	if (!j)
+		app_error(app, NULL, "Could not mark %s as read: %s", w->name, e.err);
+	json_free(j);
+}
+
 void app_switch(App *app, size_t idx)
 {
 	if (idx >= app->nwins)
 		return;
+	Window *old = current(app);
+	if (old->needs_read && idx != app->cur)
+		mark_read(app, old);
 	app->cur = idx;
 	Window *w = current(app);
+	int unread = w->activity >= ACT_MSG || w->needs_read;
 	w->activity = ACT_NONE;
 	if (!w->history_loaded)
 		load_history(app, w);
+	if (unread)
+		mark_read(app, w);
 	app->dirty = 1;
 }
 
