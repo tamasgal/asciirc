@@ -869,6 +869,24 @@ static void cmd_query(App *app, const char *arg)
 		send_text(app, w, rest);
 }
 
+static void cmd_msg(App *app, const char *arg)
+{
+	char target[256];
+	size_t n = strcspn(arg, " ");
+	if (n == 0 || n >= sizeof(target) || !arg[n] || !arg[n + 1]) {
+		app_error(app, current(app), "Usage: /msg #channel|user message");
+		return;
+	}
+	memcpy(target, arg, n);
+	target[n] = '\0';
+	Window *w = target[0] == '#' ? win_by_name(app, target) : query_window(app, target);
+	if (!w) {
+		app_error(app, current(app), "No window for %s, use /join first", target);
+		return;
+	}
+	send_text(app, w, arg + n + 1);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
@@ -876,6 +894,7 @@ static void cmd_help(App *app)
 		"/part [#channel]        leave a channel (closes a direct message)",
 		"/close [#channel]       hide a room without leaving it",
 		"/query user [message]   open a direct message",
+		"/msg target message     send to #channel or user without switching",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -905,6 +924,8 @@ static void run_command(App *app, const char *line)
 		cmd_part(app, arg, "close");
 	else if (strcmp(cmd, "query") == 0 || strcmp(cmd, "q") == 0)
 		cmd_query(app, arg);
+	else if (strcmp(cmd, "msg") == 0)
+		cmd_msg(app, arg);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
