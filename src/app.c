@@ -725,6 +725,9 @@ static int send_text(App *app, Window *w, const char *text)
 		app_error(app, w, "Message not sent: %s", e.err);
 		return -1;
 	}
+	const Json *m = json_get(j, "message");
+	if (m)
+		add_message(app, w, m, 0);
 	json_free(j);
 	return 0;
 }
