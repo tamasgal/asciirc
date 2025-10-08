@@ -35,7 +35,6 @@ int ui_rows(void);
 int ui_cols(void);
 void ui_draw(App *app);
 void ui_redraw_all(void);
-void ui_bell(void);
 
 size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max);
 int ui_input_key(Input *in, const Key *k);

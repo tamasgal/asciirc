@@ -122,8 +122,6 @@ static void win_append(App *app, Window *w, Line *ln, int notify)
 		if (w != current(app)) {
 			if (a > w->activity)
 				w->activity = a;
-			if (a == ACT_HIGHLIGHT)
-				ui_bell();
 		}
 		if (a >= ACT_MSG && w->rid)
 			w->needs_read = 1;

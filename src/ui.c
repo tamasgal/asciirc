@@ -93,11 +93,6 @@ int ui_check_resize(void)
 	return 1;
 }
 
-void ui_bell(void)
-{
-	write_all("\a", 1);
-}
-
 int ui_rows(void)
 {
 	return rows;
