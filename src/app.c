@@ -914,6 +914,28 @@ static void cmd_msg(App *app, const char *arg)
 	send_text(app, w, arg + n + 1);
 }
 
+static void cmd_window(App *app, const char *arg)
+{
+	if (strcmp(arg, "next") == 0 || strcmp(arg, "n") == 0) {
+		app_switch(app, (app->cur + 1) % app->nwins);
+	} else if (strcmp(arg, "prev") == 0 || strcmp(arg, "p") == 0) {
+		app_switch(app, (app->cur + app->nwins - 1) % app->nwins);
+	} else if (!*arg || strcmp(arg, "list") == 0) {
+		for (size_t i = 0; i < app->nwins; i++)
+			app_info(app, current(app), "%3zu %s", i + 1, app->wins[i]->name);
+	} else if (isdigit((unsigned char)arg[0])) {
+		long n = strtol(arg, NULL, 10);
+		if (n < 1 || (size_t)n > app->nwins)
+			app_error(app, current(app), "No such window: %ld", n);
+		else
+			app_switch(app, (size_t)n - 1);
+	} else {
+		Window *w = target_window(app, arg);
+		if (w)
+			app_switch(app, win_index(app, w));
+	}
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
@@ -922,6 +944,7 @@ static void cmd_help(App *app)
 		"/close [#channel]       hide a room without leaving it",
 		"/query user [message]   open a direct message",
 		"/msg target message     send to #channel or user without switching",
+		"/window n|next|prev     switch window, /window list shows all",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -953,6 +976,8 @@ static void run_command(App *app, const char *line)
 		cmd_query(app, arg);
 	else if (strcmp(cmd, "msg") == 0)
 		cmd_msg(app, arg);
+	else if (strcmp(cmd, "window") == 0 || strcmp(cmd, "win") == 0 || strcmp(cmd, "w") == 0)
+		cmd_window(app, arg);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
