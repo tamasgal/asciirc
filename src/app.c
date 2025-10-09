@@ -936,6 +936,41 @@ static void cmd_window(App *app, const char *arg)
 	}
 }
 
+static void cmd_names(App *app)
+{
+	Window *w = current(app);
+	const char *ep = history_endpoint(w->type);
+	if (!w->rid || !ep) {
+		app_error(app, w, "Not in a room");
+		return;
+	}
+	Buf path;
+	buf_init(&path);
+	buf_printf(&path, "/api/v1/%s.members?count=500&roomId=", ep);
+	url_encode(&path, w->rid);
+	Err e;
+	Json *j = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	buf_free(&path);
+	if (!j) {
+		app_error(app, w, "%s", e.err);
+		return;
+	}
+	const Json *members = json_get(j, "members");
+	Buf out;
+	buf_init(&out);
+	for (size_t i = 0; i < json_len(members); i++) {
+		const char *u = json_get_str(json_at(members, i), "username");
+		const char *st = json_get_str(json_at(members, i), "status");
+		if (!u)
+			continue;
+		buf_printf(&out, "[%s%s] ", st && strcmp(st, "online") == 0 ? "+" : " ", u);
+	}
+	app_info(app, w, "Users in %s (%d): %s", w->name, (int)json_num(json_get(j, "total"), (double)json_len(members)),
+		 out.data ? out.data : "");
+	buf_free(&out);
+	json_free(j);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
@@ -945,6 +980,7 @@ static void cmd_help(App *app)
 		"/query user [message]   open a direct message",
 		"/msg target message     send to #channel or user without switching",
 		"/window n|next|prev     switch window, /window list shows all",
+		"/names                  list members of the current room",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -978,6 +1014,8 @@ static void run_command(App *app, const char *line)
 		cmd_msg(app, arg);
 	else if (strcmp(cmd, "window") == 0 || strcmp(cmd, "win") == 0 || strcmp(cmd, "w") == 0)
 		cmd_window(app, arg);
+	else if (strcmp(cmd, "names") == 0 || strcmp(cmd, "who") == 0)
+		cmd_names(app);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
