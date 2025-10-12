@@ -936,6 +936,30 @@ static void cmd_window(App *app, const char *arg)
 	}
 }
 
+static void cmd_list(App *app, const char *arg)
+{
+	Err e;
+	Json *j = rc_get(&app->rc, "/api/v1/channels.list?count=500&sort=%7B%22name%22%3A1%7D", e.err, sizeof(e.err));
+	if (!j) {
+		app_error(app, current(app), "%s", e.err);
+		return;
+	}
+	const Json *chans = json_get(j, "channels");
+	size_t shown = 0;
+	for (size_t i = 0; i < json_len(chans); i++) {
+		const Json *c = json_at(chans, i);
+		const char *name = json_get_str(c, "name");
+		const char *topic = json_get_str(c, "topic");
+		if (!name || (*arg && !strstr(name, arg)))
+			continue;
+		app_info(app, current(app), "#%-24s %5d  %s", name, (int)json_num(json_get(c, "usersCount"), 0),
+			 topic ? topic : "");
+		shown++;
+	}
+	app_info(app, current(app), "End of channel list (%zu of %d)", shown, (int)json_num(json_get(j, "total"), 0));
+	json_free(j);
+}
+
 static void cmd_names(App *app)
 {
 	Window *w = current(app);
@@ -980,6 +1004,7 @@ static void cmd_help(App *app)
 		"/query user [message]   open a direct message",
 		"/msg target message     send to #channel or user without switching",
 		"/window n|next|prev     switch window, /window list shows all",
+		"/list [filter]          list public channels",
 		"/names                  list members of the current room",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
@@ -1014,6 +1039,8 @@ static void run_command(App *app, const char *line)
 		cmd_msg(app, arg);
 	else if (strcmp(cmd, "window") == 0 || strcmp(cmd, "win") == 0 || strcmp(cmd, "w") == 0)
 		cmd_window(app, arg);
+	else if (strcmp(cmd, "list") == 0)
+		cmd_list(app, arg);
 	else if (strcmp(cmd, "names") == 0 || strcmp(cmd, "who") == 0)
 		cmd_names(app);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
