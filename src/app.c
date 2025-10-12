@@ -10,7 +10,7 @@
 #include <string.h>
 
 #define MAX_LINES 1000
-#define HISTORY_COUNT 20
+#define HISTORY_COUNT 50
 #define RECONNECT_MAX 30
 
 typedef struct {
