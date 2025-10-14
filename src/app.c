@@ -914,6 +914,28 @@ static void cmd_msg(App *app, const char *arg)
 	send_text(app, w, arg + n + 1);
 }
 
+static void cmd_me(App *app, const char *arg)
+{
+	Window *w = current(app);
+	if (!w->rid) {
+		app_error(app, w, "Not in a room");
+		return;
+	}
+	Buf body;
+	buf_init(&body);
+	buf_puts(&body, "{\"command\":\"me\",\"roomId\":");
+	buf_json_str(&body, w->rid);
+	buf_puts(&body, ",\"params\":");
+	buf_json_str(&body, arg);
+	buf_puts(&body, "}");
+	Err e;
+	Json *j = rc_post(&app->rc, "/api/v1/commands.run", body.data, e.err, sizeof(e.err));
+	buf_free(&body);
+	if (!j)
+		app_error(app, w, "%s", e.err);
+	json_free(j);
+}
+
 static void cmd_window(App *app, const char *arg)
 {
 	if (strcmp(arg, "next") == 0 || strcmp(arg, "n") == 0) {
@@ -1003,6 +1025,7 @@ static void cmd_help(App *app)
 		"/close [#channel]       hide a room without leaving it",
 		"/query user [message]   open a direct message",
 		"/msg target message     send to #channel or user without switching",
+		"/me action              send an action",
 		"/window n|next|prev     switch window, /window list shows all",
 		"/list [filter]          list public channels",
 		"/names                  list members of the current room",
@@ -1037,6 +1060,8 @@ static void run_command(App *app, const char *line)
 		cmd_query(app, arg);
 	else if (strcmp(cmd, "msg") == 0)
 		cmd_msg(app, arg);
+	else if (strcmp(cmd, "me") == 0)
+		cmd_me(app, arg);
 	else if (strcmp(cmd, "window") == 0 || strcmp(cmd, "win") == 0 || strcmp(cmd, "w") == 0)
 		cmd_window(app, arg);
 	else if (strcmp(cmd, "list") == 0)
