@@ -1017,6 +1017,20 @@ static void cmd_names(App *app)
 	json_free(j);
 }
 
+static void cmd_topic(App *app, const char *arg)
+{
+	Window *w = current(app);
+	if (!*arg) {
+		app_info(app, w, "Topic for %s: %s", w->name, w->topic ? w->topic : "(none)");
+		return;
+	}
+	if (!w->rid || w->type == 'd') {
+		app_error(app, w, "Cannot set a topic here");
+		return;
+	}
+	post_room_action(app, w, "setTopic", "topic", arg);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
@@ -1029,6 +1043,7 @@ static void cmd_help(App *app)
 		"/window n|next|prev     switch window, /window list shows all",
 		"/list [filter]          list public channels",
 		"/names                  list members of the current room",
+		"/topic [text]           show or set the topic",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -1068,6 +1083,8 @@ static void run_command(App *app, const char *line)
 		cmd_list(app, arg);
 	else if (strcmp(cmd, "names") == 0 || strcmp(cmd, "who") == 0)
 		cmd_names(app);
+	else if (strcmp(cmd, "topic") == 0)
+		cmd_topic(app, arg);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
