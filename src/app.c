@@ -1031,6 +1031,16 @@ static void cmd_topic(App *app, const char *arg)
 	post_room_action(app, w, "setTopic", "topic", arg);
 }
 
+static void cmd_clear(App *app)
+{
+	Window *w = current(app);
+	for (size_t i = 0; i < w->nlines; i++)
+		line_free(&w->lines[i]);
+	w->nlines = 0;
+	w->scroll = 0;
+	app->dirty = 1;
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
@@ -1044,6 +1054,7 @@ static void cmd_help(App *app)
 		"/list [filter]          list public channels",
 		"/names                  list members of the current room",
 		"/topic [text]           show or set the topic",
+		"/clear                  clear the current window",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
 		"      PgUp/PgDn scroll, // sends a leading slash",
@@ -1085,6 +1096,8 @@ static void run_command(App *app, const char *line)
 		cmd_names(app);
 	else if (strcmp(cmd, "topic") == 0)
 		cmd_topic(app, arg);
+	else if (strcmp(cmd, "clear") == 0)
+		cmd_clear(app);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
