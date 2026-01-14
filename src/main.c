@@ -38,10 +38,12 @@ static void usage(FILE *f)
 	      "\n"
 	      "  -s server    server URL, e.g. https://chat.example.com\n"
 	      "  -i user_id   user id belonging to a personal access token\n"
-	      "  -t token     personal acess token (prefer ASCIIRC_TOKEN)\n"
+	      "  -t token     personal acess token (prefer ASCIIRC_TOKEN or the config file)\n"
+	      "  -c config    config file (default: $XDG_CONFIG_HOME/asciirc/config)\n"
 	      "  -k           do not verify TLS certificates\n"
 	      "\n"
-	      "Environment: ASCIIRC_SERVER, ASCIIRC_USER_ID, ASCIIRC_TOKEN, ASCIIRC_USERNAME\n",
+	      "Environment: ASCIIRC_SERVER, ASCIIRC_USER_ID, ASCIIRC_TOKEN, ASCIIRC_USERNAME\n"
+	      "Config file lines: server = ..., user_id = ..., token = ..., username = ..., insecure = 1\n",
 	      f);
 }
 
@@ -49,6 +51,73 @@ static void set_str(char **dst, const char *v)
 {
 	free(*dst);
 	*dst = v ? xstrdup(v) : NULL;
+}
+
+static char *trim(char *s)
+{
+	while (*s == ' ' || *s == '\t')
+		s++;
+	size_t n = strlen(s);
+	while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\n' || s[n - 1] == '\r'))
+		s[--n] = '\0';
+	return s;
+}
+
+static int load_config(const char *path, int required, Config *cfg)
+{
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		if (required) {
+			fprintf(stderr, "asciirc: %s: %s\n", path, strerror(errno));
+			return -1;
+		}
+		return 0;
+	}
+	char line[1024];
+	int lineno = 0;
+	while (fgets(line, sizeof(line), f)) {
+		lineno++;
+		char *s = trim(line);
+		if (!*s || *s == '#')
+			continue;
+		char *eq = strchr(s, '=');
+		if (!eq) {
+			fprintf(stderr, "asciirc: %s:%d: expected key = value\n", path, lineno);
+			continue;
+		}
+		*eq = '\0';
+		char *key = trim(s);
+		char *val = trim(eq + 1);
+		if (strcmp(key, "server") == 0)
+			set_str(&cfg->server, val);
+		else if (strcmp(key, "user_id") == 0)
+			set_str(&cfg->user_id, val);
+		else if (strcmp(key, "token") == 0)
+			set_str(&cfg->token, val);
+		else if (strcmp(key, "username") == 0)
+			set_str(&cfg->username, val);
+		else if (strcmp(key, "insecure") == 0)
+			cfg->insecure = strcmp(val, "1") == 0 || strcmp(val, "true") == 0 || strcmp(val, "yes") == 0;
+		else
+			fprintf(stderr, "asciirc: %s:%d: unknown key '%s'\n", path, lineno, key);
+	}
+	fclose(f);
+	return 0;
+}
+
+static char *default_config_path(void)
+{
+	Buf b;
+	buf_init(&b);
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	const char *home = getenv("HOME");
+	if (xdg && *xdg)
+		buf_printf(&b, "%s/asciirc/config", xdg);
+	else if (home)
+		buf_printf(&b, "%s/.config/asciirc/config", home);
+	else
+		return NULL;
+	return buf_steal(&b);
 }
 
 static void handle_key(App *app, const Key *k)
@@ -156,6 +225,7 @@ int main(int argc, char **argv)
 
 	Config cfg;
 	memset(&cfg, 0, sizeof(cfg));
+	const char *config_path = NULL;
 	const char *opt_server = NULL, *opt_uid = NULL, *opt_token = NULL;
 	int opt_insecure = 0;
 	int c;
@@ -164,6 +234,7 @@ int main(int argc, char **argv)
 		case 's': opt_server = optarg; break;
 		case 'i': opt_uid = optarg; break;
 		case 't': opt_token = optarg; break;
+		case 'c': config_path = optarg; break;
 		case 'k': opt_insecure = 1; break;
 		case 'h': usage(stdout); return 0;
 		default: usage(stderr); return 2;
@@ -174,6 +245,15 @@ int main(int argc, char **argv)
 		return 2;
 	}
 
+	if (config_path) {
+		if (load_config(config_path, 1, &cfg) < 0)
+			return 1;
+	} else {
+		char *p = default_config_path();
+		if (p)
+			load_config(p, 0, &cfg);
+		free(p);
+	}
 	if (getenv("ASCIIRC_SERVER"))
 		set_str(&cfg.server, getenv("ASCIIRC_SERVER"));
 	if (getenv("ASCIIRC_USER_ID"))
