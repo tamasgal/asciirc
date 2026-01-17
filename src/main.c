@@ -73,6 +73,9 @@ static int load_config(const char *path, int required, Config *cfg)
 		}
 		return 0;
 	}
+	struct stat st;
+	if (fstat(fileno(f), &st) == 0 && (st.st_mode & 077))
+		fprintf(stderr, "asciirc: warning: %s is readable by other users, run chmod 600 on it\n", path);
 	char line[1024];
 	int lineno = 0;
 	while (fgets(line, sizeof(line), f)) {
