@@ -1058,7 +1058,7 @@ static void cmd_help(App *app)
 		"/reconnect              reconnect the realtime connection",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
-		"      PgUp/PgDn scroll, // sends a leading slash",
+		"      PgUp/PgDn scroll, Tab completes nicks, // sends a leading slash",
 	};
 	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
 		app_info(app, current(app), "%s", help[i]);
@@ -1120,5 +1120,37 @@ void app_submit(App *app, const char *line)
 		run_command(app, line + 1);
 	else
 		send_text(app, current(app), line[0] == '/' ? line + 1 : line);
+	app->dirty = 1;
+}
+
+void app_tab_complete(App *app)
+{
+	Input *in = &app->input;
+	Window *w = current(app);
+	size_t start = in->cur;
+	while (start > 0 && in->text[start - 1] != ' ')
+		start--;
+	size_t plen = in->cur - start;
+	const char *prefix = in->text + start;
+	int at = plen > 0 && prefix[0] == '@';
+	const char *match = NULL;
+	for (size_t i = w->nlines; i > 0 && !match; i--) {
+		const char *nick = w->lines[i - 1].nick;
+		if (nick && strlen(nick) >= plen - at && strncasecmp_ascii(nick, prefix + at, plen - at) == 0 &&
+		    !(app->rc.username && strcmp(nick, app->rc.username) == 0))
+			match = nick;
+	}
+	if (!match || plen == (size_t)at)
+		return;
+	char completed[512];
+	snprintf(completed, sizeof(completed), "%s%s%s", at ? "@" : "", match, start == 0 && !at ? ": " : " ");
+	size_t clen = strlen(completed);
+	if (in->len - plen + clen >= INPUT_MAX)
+		return;
+	memmove(in->text + start + clen, in->text + in->cur, in->len - in->cur);
+	memcpy(in->text + start, completed, clen);
+	in->len = in->len - plen + clen;
+	in->cur = start + clen;
+	in->text[in->len] = '\0';
 	app->dirty = 1;
 }

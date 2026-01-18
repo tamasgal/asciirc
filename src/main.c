@@ -184,6 +184,9 @@ static void handle_key(App *app, const Key *k)
 		if (w->scroll < 0)
 			w->scroll = 0;
 		break;
+	case K_TAB:
+		app_tab_complete(app);
+		break;
 	case K_ALT: {
 		static const char *keys = "1234567890qwertyuio";
 		const char *p = k->c ? strchr(keys, k->c) : NULL;

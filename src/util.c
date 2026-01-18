@@ -183,3 +183,13 @@ int str_casecmp(const char *a, const char *b)
 			return ca - cb;
 	}
 }
+
+int strncasecmp_ascii(const char *a, const char *b, size_t n)
+{
+	for (; n > 0; a++, b++, n--) {
+		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
+		if (ca != cb || !ca)
+			return ca - cb;
+	}
+	return 0;
+}
