@@ -72,6 +72,35 @@ Json *rc_post(Rc *rc, const char *path, const char *body, char *err, size_t errl
 	return rc_request(rc, "POST", path, body ? body : "{}", err, errlen);
 }
 
+int rc_login_password(Rc *rc, const char *user, const char *password, char *err, size_t errlen)
+{
+	Buf b;
+	buf_init(&b);
+	buf_puts(&b, "{\"user\":");
+	buf_json_str(&b, user);
+	buf_puts(&b, ",\"password\":");
+	buf_json_str(&b, password);
+	buf_puts(&b, "}");
+	Json *j = rc_post(rc, "/api/v1/login", b.data, err, errlen);
+	memset(b.data, 0, b.len);
+	buf_free(&b);
+	if (!j)
+		return -1;
+	const char *uid = json_str(json_path(j, "data.userId"));
+	const char *tok = json_str(json_path(j, "data.authToken"));
+	if (!uid || !tok) {
+		snprintf(err, errlen, "login response without credentials (two-factor authentication is not supported, use a personal access token)");
+		json_free(j);
+		return -1;
+	}
+	free(rc->user_id);
+	free(rc->token);
+	rc->user_id = xstrdup(uid);
+	rc->token = xstrdup(tok);
+	json_free(j);
+	return 0;
+}
+
 int rc_fetch_me(Rc *rc, char *err, size_t errlen)
 {
 	Json *j = rc_get(rc, "/api/v1/me", err, errlen);

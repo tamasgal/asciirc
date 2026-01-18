@@ -34,11 +34,12 @@ static void on_term(int sig)
 
 static void usage(FILE *f)
 {
-	fputs("usage: asciirc [-s server] [-i user_id] [-t token] [-c config] [-k]\n"
+	fputs("usage: asciirc [-s server] [-i user_id] [-t token] [-u username] [-c config] [-k]\n"
 	      "\n"
 	      "  -s server    server URL, e.g. https://chat.example.com\n"
 	      "  -i user_id   user id belonging to a personal access token\n"
 	      "  -t token     personal acess token (prefer ASCIIRC_TOKEN or the config file)\n"
+	      "  -u username  log in with username and password instead of a token\n"
 	      "  -c config    config file (default: $XDG_CONFIG_HOME/asciirc/config)\n"
 	      "  -k           do not verify TLS certificates\n"
 	      "\n"
@@ -121,6 +122,41 @@ static char *default_config_path(void)
 	else
 		return NULL;
 	return buf_steal(&b);
+}
+
+static char *read_password(const char *prompt)
+{
+	int fd = open("/dev/tty", O_RDWR);
+	if (fd < 0)
+		return NULL;
+	struct termios old, t;
+	int have_tty = tcgetattr(fd, &old) == 0;
+	if (have_tty) {
+		t = old;
+		t.c_lflag &= ~(tcflag_t)ECHO;
+		tcsetattr(fd, TCSAFLUSH, &t);
+	}
+	if (write(fd, prompt, strlen(prompt)) < 0) {
+	}
+	char buf[512];
+	size_t n = 0;
+	for (;;) {
+		char c;
+		ssize_t r = read(fd, &c, 1);
+		if (r <= 0 || c == '\n' || c == '\r')
+			break;
+		if (n < sizeof(buf) - 1)
+			buf[n++] = c;
+	}
+	buf[n] = '\0';
+	if (have_tty)
+		tcsetattr(fd, TCSAFLUSH, &old);
+	if (write(fd, "\n", 1) < 0) {
+	}
+	close(fd);
+	char *p = xstrdup(buf);
+	memset(buf, 0, sizeof(buf));
+	return p;
 }
 
 static void handle_key(App *app, const Key *k)
@@ -229,14 +265,15 @@ int main(int argc, char **argv)
 	Config cfg;
 	memset(&cfg, 0, sizeof(cfg));
 	const char *config_path = NULL;
-	const char *opt_server = NULL, *opt_uid = NULL, *opt_token = NULL;
+	const char *opt_server = NULL, *opt_uid = NULL, *opt_token = NULL, *opt_user = NULL;
 	int opt_insecure = 0;
 	int c;
-	while ((c = getopt(argc, argv, "s:i:t:c:kh")) != -1) {
+	while ((c = getopt(argc, argv, "s:i:t:u:c:kh")) != -1) {
 		switch (c) {
 		case 's': opt_server = optarg; break;
 		case 'i': opt_uid = optarg; break;
 		case 't': opt_token = optarg; break;
+		case 'u': opt_user = optarg; break;
 		case 'c': config_path = optarg; break;
 		case 'k': opt_insecure = 1; break;
 		case 'h': usage(stdout); return 0;
@@ -271,6 +308,10 @@ int main(int argc, char **argv)
 		set_str(&cfg.user_id, opt_uid);
 	if (opt_token)
 		set_str(&cfg.token, opt_token);
+	if (opt_user) {
+		set_str(&cfg.username, opt_user);
+		set_str(&cfg.token, NULL);
+	}
 	if (opt_insecure)
 		cfg.insecure = 1;
 
@@ -304,8 +345,21 @@ int main(int argc, char **argv)
 		}
 		app.rc.user_id = xstrdup(cfg.user_id);
 		app.rc.token = xstrdup(cfg.token);
+	} else if (cfg.username) {
+		char *pw = read_password("Password: ");
+		if (!pw) {
+			fputs("asciirc: cannot read password\n", stderr);
+			return 1;
+		}
+		int r = rc_login_password(&app.rc, cfg.username, pw, err, sizeof(err));
+		memset(pw, 0, strlen(pw));
+		free(pw);
+		if (r < 0) {
+			fprintf(stderr, "asciirc: login failed: %s\n", err);
+			return 1;
+		}
 	} else {
-		fputs("asciirc: no credentials, give a user id and token\n\n", stderr);
+		fputs("asciirc: no credentials, give a user id and token or a username\n\n", stderr);
 		usage(stderr);
 		return 2;
 	}
