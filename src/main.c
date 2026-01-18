@@ -199,6 +199,8 @@ static void handle_key(App *app, const Key *k)
 			app_switch(app, (app->cur + 1) % app->nwins);
 		else if (k->c == 'p')
 			app_switch(app, (app->cur + app->nwins - 1) % app->nwins);
+		else if (k->c == 'l')
+			ui_redraw_all();
 		else
 			ui_input_key(&app->input, k);
 		break;

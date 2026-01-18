@@ -93,6 +93,11 @@ int ui_check_resize(void)
 	return 1;
 }
 
+void ui_redraw_all(void)
+{
+	write_all("\x1b[2J", 4);
+}
+
 int ui_rows(void)
 {
 	return rows;
