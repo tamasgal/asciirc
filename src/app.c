@@ -618,7 +618,7 @@ static void on_ready(void *ctx)
 {
 	App *app = ctx;
 	app->reconnect_delay = 0;
-	app_info(app, NULL, "Realtime conection established");
+	app_info(app, NULL, "Realtime connection established");
 	if (app->ever_ready) {
 		load_subscriptions(app, 0);
 		for (size_t i = 0; i < app->nwins; i++)
