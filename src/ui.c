@@ -367,7 +367,7 @@ static void render_line(const Line *ln, int width, RowList *rl)
 
 static void draw_bar(Buf *out, int row, const char *content, int content_w)
 {
-	buf_printf(out, "\x1b[%d;1H\x1b[0;37;44m%s", row, content);
+	buf_printf(out, "\x1b[%d;1H\x1b[0;7m%s", row, content);
 	put_spaces(out, cols - content_w);
 	buf_puts(out, "\x1b[0m");
 }
