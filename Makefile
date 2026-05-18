@@ -1,3 +1,4 @@
+PREFIX ?= /usr/local
 CC ?= cc
 PKG_CONFIG ?= pkg-config
 
@@ -20,7 +21,11 @@ asciirc: $(OBJ)
 
 $(OBJ): $(HDR)
 
+install: asciirc
+	mkdir -p $(DESTDIR)$(PREFIX)/bin
+	cp asciirc $(DESTDIR)$(PREFIX)/bin/asciirc
+
 clean:
 	rm -f asciirc $(OBJ)
 
-.PHONY: all clean
+.PHONY: all install clean
