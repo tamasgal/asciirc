@@ -5,7 +5,7 @@ OPENSSL_CFLAGS := $(shell $(PKG_CONFIG) --cflags openssl 2>/dev/null)
 OPENSSL_LIBS := $(shell $(PKG_CONFIG) --libs openssl 2>/dev/null || echo -lssl -lcrypto)
 
 CFLAGS ?= -O2 -g
-CFLAGS += -std=c99 -Wall -Wextra
+CFLAGS += -std=c99 -Wall -Wextra -pedantic
 CPPFLAGS += -D_XOPEN_SOURCE=700 -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE $(OPENSSL_CFLAGS)
 LDLIBS += $(OPENSSL_LIBS)
 
