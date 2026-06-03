@@ -214,7 +214,12 @@ static void ddp_handle(Rc *rc, const Json *m, const RcHandlers *h, void *ctx)
 			rc_ddp_disconnect(rc);
 			return;
 		}
+		char ev[256];
 		ddp_subscribe(rc, "stream-room-messages", "__my_messages__");
+		snprintf(ev, sizeof(ev), "%s/subscriptions-changed", rc->user_id);
+		ddp_subscribe(rc, "stream-notify-user", ev);
+		snprintf(ev, sizeof(ev), "%s/rooms-changed", rc->user_id);
+		ddp_subscribe(rc, "stream-notify-user", ev);
 		rc->state = DDP_READY;
 		h->ready(ctx);
 	} else if (strcmp(type, "nosub") == 0) {
