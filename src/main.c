@@ -38,7 +38,7 @@ static void usage(FILE *f)
 	      "\n"
 	      "  -s server    server URL, e.g. https://chat.example.com\n"
 	      "  -i user_id   user id belonging to a personal access token\n"
-	      "  -t token     personal acess token (prefer ASCIIRC_TOKEN or the config file)\n"
+	      "  -t token     personal access token (prefer ASCIIRC_TOKEN or the config file)\n"
 	      "  -u username  log in with username and password instead of a token\n"
 	      "  -c config    config file (default: $XDG_CONFIG_HOME/asciirc/config)\n"
 	      "  -k           do not verify TLS certificates\n"
