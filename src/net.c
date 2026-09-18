@@ -144,7 +144,7 @@ Conn *net_connect(const Url *u, char *err, size_t errlen)
 	SSL_set_fd(c->ssl, fd);
 	SSL_set_tlsext_host_name(c->ssl, u->host);
 	if (!ssl_insecure)
-		SSL_set1_host(c->ssl, u->host);
+		X509_VERIFY_PARAM_set1_host(SSL_get0_param(c->ssl), u->host, 0);
 	if (SSL_connect(c->ssl) != 1) {
 		long vr = SSL_get_verify_result(c->ssl);
 		if (vr != X509_V_OK) {
