@@ -22,7 +22,6 @@ typedef struct {
 	char *token;
 	char *username;
 	int insecure;
-	int show_usernames;
 } Config;
 
 static volatile sig_atomic_t got_term;
@@ -45,8 +44,7 @@ static void usage(FILE *f)
 	      "  -k           do not verify TLS certificates\n"
 	      "\n"
 	      "Environment: ASCIIRC_SERVER, ASCIIRC_USER_ID, ASCIIRC_TOKEN, ASCIIRC_USERNAME\n"
-	      "Config file lines: server = ..., user_id = ..., token = ..., username = ...,\n"
-	      "                   insecure = 1, nicks = name|username\n",
+	      "Config file lines: server = ..., user_id = ..., token = ..., username = ..., insecure = 1\n",
 	      f);
 }
 
@@ -102,8 +100,6 @@ static int load_config(const char *path, int required, Config *cfg)
 			set_str(&cfg->token, val);
 		else if (strcmp(key, "username") == 0)
 			set_str(&cfg->username, val);
-		else if (strcmp(key, "nicks") == 0)
-			cfg->show_usernames = strcmp(val, "username") == 0;
 		else if (strcmp(key, "insecure") == 0)
 			cfg->insecure = strcmp(val, "1") == 0 || strcmp(val, "true") == 0 || strcmp(val, "yes") == 0;
 		else
@@ -383,7 +379,6 @@ int main(int argc, char **argv)
 	}
 	atexit(ui_shutdown);
 	app_init(&app);
-	app.show_usernames = cfg.show_usernames;
 	app_start(&app);
 	int rc = run(&app);
 	ui_shutdown();

@@ -20,7 +20,6 @@ typedef struct {
 static void line_free(Line *ln)
 {
 	free(ln->nick);
-	free(ln->name);
 	free(ln->text);
 	free(ln->msgid);
 	free(ln->raw);
@@ -262,11 +261,8 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 	const char *user = json_str(json_path(m, "u.username"));
 	const char *msg = json_get_str(m, "msg");
 	const char *t = json_get_str(m, "t");
-	const char *name = json_str(json_path(m, "u.name"));
 	if (!user)
 		user = "?";
-	if (app->show_usernames || (name && !*name))
-		name = NULL;
 	if (!msg)
 		msg = "";
 
@@ -281,7 +277,7 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 	buf_init(&text);
 	if (t && strcmp(t, "e2e") != 0) {
 		ln->kind = LINE_EVENT;
-		describe_event(&text, t, name ? name : user, msg);
+		describe_event(&text, t, user, msg);
 	} else {
 		ln->kind = LINE_MSG;
 		if (json_get(m, "tmid"))
@@ -305,7 +301,6 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 	}
 
 	ln->nick = ui_sanitize(user);
-	ln->name = name ? ui_sanitize(name) : NULL;
 	ln->text = ui_sanitize(text.data ? text.data : "");
 	buf_free(&text);
 	ln->msgid = id ? xstrdup(id) : NULL;
@@ -677,7 +672,6 @@ void app_init(App *app)
 	app->quit = 0;
 	app->dirty = 1;
 	app->ever_ready = 0;
-	app->show_usernames = 0;
 	app->reconnect_at = 0;
 	app->reconnect_delay = 0;
 	Window *st = win_new(app, NULL, "(status)", 0);
@@ -1064,7 +1058,7 @@ static void cmd_help(App *app)
 		"/reconnect              reconnect the realtime connection",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
-		"      PgUp/PgDn scroll, Tab completes @mentions, // sends a leading slash",
+		"      PgUp/PgDn scroll, Tab completes nicks, // sends a leading slash",
 	};
 	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
 		app_info(app, current(app), "%s", help[i]);
@@ -1129,11 +1123,6 @@ void app_submit(App *app, const char *line)
 	app->dirty = 1;
 }
 
-static int completes(const char *candidate, const char *prefix, size_t plen)
-{
-	return candidate && strlen(candidate) >= plen && strncasecmp_ascii(candidate, prefix, plen) == 0;
-}
-
 void app_tab_complete(App *app)
 {
 	Input *in = &app->input;
@@ -1141,23 +1130,20 @@ void app_tab_complete(App *app)
 	size_t start = in->cur;
 	while (start > 0 && in->text[start - 1] != ' ')
 		start--;
-	const char *prefix = in->text + start;
 	size_t plen = in->cur - start;
-	size_t skip = plen > 0 && prefix[0] == '@';
-	if (plen == skip)
-		return;
+	const char *prefix = in->text + start;
+	int at = plen > 0 && prefix[0] == '@';
 	const char *match = NULL;
 	for (size_t i = w->nlines; i > 0 && !match; i--) {
-		const Line *ln = &w->lines[i - 1];
-		if (!ln->nick || ln->own)
-			continue;
-		if (completes(ln->nick, prefix + skip, plen - skip) || completes(ln->name, prefix + skip, plen - skip))
-			match = ln->nick;
+		const char *nick = w->lines[i - 1].nick;
+		if (nick && strlen(nick) >= plen - at && strncasecmp_ascii(nick, prefix + at, plen - at) == 0 &&
+		    !(app->rc.username && strcmp(nick, app->rc.username) == 0))
+			match = nick;
 	}
-	if (!match)
+	if (!match || plen == (size_t)at)
 		return;
 	char completed[512];
-	snprintf(completed, sizeof(completed), "@%s ", match);
+	snprintf(completed, sizeof(completed), "%s%s%s", at ? "@" : "", match, start == 0 && !at ? ": " : " ");
 	size_t clen = strlen(completed);
 	if (in->len - plen + clen >= INPUT_MAX)
 		return;

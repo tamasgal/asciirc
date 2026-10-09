@@ -18,7 +18,6 @@ typedef struct {
 	time_t ts;
 	LineKind kind;
 	char *nick;
-	char *name;
 	char *text;
 	char *msgid;
 	char *raw;
@@ -79,7 +78,6 @@ typedef struct {
 	int quit;
 	int dirty;
 	int ever_ready;
-	int show_usernames;
 	long long reconnect_at;
 	int reconnect_delay;
 } App;
