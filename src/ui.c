@@ -266,7 +266,8 @@ static void render_line(const Line *ln, int width, RowList *rl)
 	buf_puts(&pre, ts);
 	prew += 6;
 
-	const char *nick = ln->nick ? ln->nick : "";
+	const char *user = ln->nick ? ln->nick : "";
+	const char *nick = ln->name ? ln->name : user;
 	switch (ln->kind) {
 	case LINE_MSG:
 		if (ln->own)
@@ -274,7 +275,7 @@ static void render_line(const Line *ln, int width, RowList *rl)
 		else if (ln->highlight)
 			buf_printf(&pre, "<\x1b[1;33m%s\x1b[0m> ", nick);
 		else
-			buf_printf(&pre, "<\x1b[%sm%s\x1b[0m> ", nick_color(nick), nick);
+			buf_printf(&pre, "<\x1b[%sm%s\x1b[0m> ", nick_color(user), nick);
 		prew += str_width(nick, strlen(nick)) + 3;
 		break;
 	case LINE_ACTION:
