@@ -489,6 +489,7 @@ static void free_subs(App *app)
 	for (size_t i = 0; i < app->nsubs; i++) {
 		free(app->subs[i].rid);
 		free(app->subs[i].name);
+		free(app->subs[i].fname);
 	}
 	free(app->subs);
 	app->subs = NULL;
@@ -516,6 +517,8 @@ static int load_subscriptions(App *app, int initial)
 		Subscription *sub = &app->subs[app->nsubs++];
 		sub->rid = xstrdup(rid);
 		sub->name = xstrdup(sub_display_name(s));
+		const char *fname = json_get_str(s, "fname");
+		sub->fname = fname && *fname && t[0] == 'd' ? xstrdup(fname) : NULL;
 		sub->type = t[0];
 		sub->open = json_get(s, "open") ? json_bool(json_get(s, "open")) : 1;
 		sub->unread = (int)json_num(json_get(s, "unread"), 0);
@@ -529,6 +532,10 @@ static int load_subscriptions(App *app, int initial)
 		if (!s->open || win_by_rid(app, s->rid))
 			continue;
 		Window *w = open_window(app, s->rid, s->name, s->type);
+		if (s->fname && !app->show_usernames) {
+			free(w->topic);
+			w->topic = ui_sanitize(s->fname);
+		}
 		if (initial && (s->unread > 0 || s->mentions > 0)) {
 			w->activity = s->mentions > 0 || s->type == 'd' ? ACT_HIGHLIGHT : ACT_MSG;
 			w->needs_read = 1;
@@ -551,7 +558,7 @@ static void load_topics(App *app)
 		const char *id = json_get_str(r, "_id");
 		const char *topic = json_get_str(r, "topic");
 		Window *w = id ? win_by_rid(app, id) : NULL;
-		if (w && topic) {
+		if (w && w->type != 'd' && topic) {
 			free(w->topic);
 			w->topic = ui_sanitize(topic);
 		}

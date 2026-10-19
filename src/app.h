@@ -50,6 +50,7 @@ typedef struct {
 typedef struct {
 	char *rid;
 	char *name;
+	char *fname;
 	char type;
 	int open;
 	int unread;
