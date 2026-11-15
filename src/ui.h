@@ -8,6 +8,7 @@ typedef enum {
 	K_CHAR,
 	K_ENTER,
 	K_TAB,
+	K_BTAB,
 	K_BACKSPACE,
 	K_DELETE,
 	K_LEFT,

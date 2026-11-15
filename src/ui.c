@@ -781,6 +781,7 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 				case 'D': k.type = K_LEFT; break;
 				case 'H': k.type = K_HOME; break;
 				case 'F': k.type = K_END; break;
+				case 'Z': k.type = K_BTAB; break;
 				case '~':
 					switch (param) {
 					case 1: case 7: k.type = K_HOME; break;

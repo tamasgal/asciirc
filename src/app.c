@@ -685,6 +685,8 @@ void app_init(App *app)
 	app->dirty = 1;
 	app->ever_ready = 0;
 	app->show_usernames = 0;
+	app->comp = NULL;
+	app->ncomp = 0;
 	app->reconnect_at = 0;
 	app->reconnect_delay = 0;
 	Window *st = win_new(app, NULL, "(status)", 0);
@@ -697,6 +699,7 @@ void app_free(App *app)
 		win_free(app->wins[i]);
 	free(app->wins);
 	free_subs(app);
+	app_tab_reset(app);
 	for (int i = 0; i < app->input.nhistory; i++)
 		free(app->input.history[i]);
 }
@@ -1090,7 +1093,7 @@ static void cmd_help(App *app)
 		"/reconnect              reconnect the realtime connection",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
-		"      PgUp/PgDn scroll, Tab completes @mentions, // sends a leading slash",
+		"      PgUp/PgDn scroll, Tab/Shift+Tab cycle @mentions, // sends a leading slash",
 	};
 	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
 		app_info(app, current(app), "%s", help[i]);
@@ -1162,37 +1165,81 @@ static int completes(const char *candidate, const char *prefix, size_t plen)
 	return candidate && strlen(candidate) >= plen && strncasecmp_ascii(candidate, prefix, plen) == 0;
 }
 
-void app_tab_complete(App *app)
+static int name_completes(const char *name, const char *prefix, size_t plen)
+{
+	if (!name)
+		return 0;
+	for (const char *p = name; p; p = strchr(p, ' ')) {
+		while (*p == ' ')
+			p++;
+		if (completes(p, prefix, plen))
+			return 1;
+	}
+	return 0;
+}
+
+void app_tab_reset(App *app)
+{
+	for (size_t i = 0; i < app->ncomp; i++)
+		free(app->comp[i]);
+	free(app->comp);
+	app->comp = NULL;
+	app->ncomp = 0;
+}
+
+static void build_completions(App *app, const char *prefix, size_t plen)
+{
+	Window *w = current(app);
+	for (size_t i = w->nlines; i > 0; i--) {
+		const Line *ln = &w->lines[i - 1];
+		if (!ln->nick || ln->own || ln->kind == LINE_EVENT)
+			continue;
+		if (!completes(ln->nick, prefix, plen) && !name_completes(ln->name, prefix, plen))
+			continue;
+		size_t k;
+		for (k = 0; k < app->ncomp; k++)
+			if (strcmp(app->comp[k], ln->nick) == 0)
+				break;
+		if (k < app->ncomp)
+			continue;
+		app->comp = xrealloc(app->comp, (app->ncomp + 1) * sizeof(*app->comp));
+		app->comp[app->ncomp++] = xstrdup(ln->nick);
+	}
+}
+
+void app_tab_complete(App *app, int dir)
 {
 	Input *in = &app->input;
-	Window *w = current(app);
-	size_t start = in->cur;
-	while (start > 0 && in->text[start - 1] != ' ')
-		start--;
-	const char *prefix = in->text + start;
-	size_t plen = in->cur - start;
-	size_t skip = plen > 0 && prefix[0] == '@';
-	if (plen == skip)
-		return;
-	const char *match = NULL;
-	for (size_t i = w->nlines; i > 0 && !match; i--) {
-		const Line *ln = &w->lines[i - 1];
-		if (!ln->nick || ln->own)
-			continue;
-		if (completes(ln->nick, prefix + skip, plen - skip) || completes(ln->name, prefix + skip, plen - skip))
-			match = ln->nick;
+	if (app->ncomp == 0) {
+		size_t start = in->cur;
+		while (start > 0 && in->text[start - 1] != ' ')
+			start--;
+		const char *prefix = in->text + start;
+		size_t plen = in->cur - start;
+		size_t skip = plen > 0 && prefix[0] == '@';
+		if (plen == skip)
+			return;
+		build_completions(app, prefix + skip, plen - skip);
+		if (app->ncomp == 0)
+			return;
+		app->comp_start = start;
+		app->comp_len = plen;
+		app->comp_idx = dir > 0 ? 0 : app->ncomp - 1;
+	} else {
+		app->comp_idx = (app->comp_idx + app->ncomp + (size_t)(dir > 0 ? 1 : -1)) % app->ncomp;
 	}
-	if (!match)
-		return;
+
 	char completed[512];
-	snprintf(completed, sizeof(completed), "@%s ", match);
+	snprintf(completed, sizeof(completed), "@%s ", app->comp[app->comp_idx]);
 	size_t clen = strlen(completed);
-	if (in->len - plen + clen >= INPUT_MAX)
+	size_t start = app->comp_start, end = start + app->comp_len;
+	if (end > in->len || in->len - app->comp_len + clen >= INPUT_MAX)
 		return;
-	memmove(in->text + start + clen, in->text + in->cur, in->len - in->cur);
+	memmove(in->text + start + clen, in->text + end, in->len - end);
 	memcpy(in->text + start, completed, clen);
-	in->len = in->len - plen + clen;
+	in->len = in->len - app->comp_len + clen;
 	in->cur = start + clen;
 	in->text[in->len] = '\0';
+	app->comp_len = clen;
 	app->dirty = 1;
 }

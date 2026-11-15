@@ -172,6 +172,8 @@ static void handle_key(App *app, const Key *k)
 	int page = (ui_rows() - 3) / 2;
 	if (page < 1)
 		page = 1;
+	if (k->type != K_TAB && k->type != K_BTAB)
+		app_tab_reset(app);
 	switch (k->type) {
 	case K_ENTER: {
 		char *line = xstrdup(app->input.text);
@@ -192,7 +194,10 @@ static void handle_key(App *app, const Key *k)
 			w->scroll = 0;
 		break;
 	case K_TAB:
-		app_tab_complete(app);
+		app_tab_complete(app, 1);
+		break;
+	case K_BTAB:
+		app_tab_complete(app, -1);
 		break;
 	case K_ALT: {
 		static const char *keys = "1234567890qwertyuio";

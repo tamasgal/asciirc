@@ -81,6 +81,11 @@ typedef struct {
 	int dirty;
 	int ever_ready;
 	int show_usernames;
+	char **comp;
+	size_t ncomp;
+	size_t comp_idx;
+	size_t comp_start;
+	size_t comp_len;
 	long long reconnect_at;
 	int reconnect_delay;
 } App;
@@ -92,7 +97,8 @@ void app_error(App *app, Window *w, const char *fmt, ...);
 void app_start(App *app);
 void app_switch(App *app, size_t idx);
 void app_submit(App *app, const char *line);
-void app_tab_complete(App *app);
+void app_tab_complete(App *app, int dir);
+void app_tab_reset(App *app);
 void app_ddp_tick(App *app);
 void app_ddp_readable(App *app);
 
