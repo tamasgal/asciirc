@@ -230,13 +230,188 @@ static void put_spaces(Buf *out, int n)
 		buf_putc(out, ' ');
 }
 
+typedef struct {
+	const char *name;
+	const char *base;
+	const char *bar;
+	const char *bar_act;
+	const char *bar_hl;
+	const char *bar_warn;
+	const char *time;
+	const char *own;
+	const char *hl_nick;
+	const char *hl_text;
+	const char *action;
+	const char *event;
+	const char *info;
+	const char *error;
+	const char *nicks[9];
+} Theme;
+
+#define RGB(r, g, b) "38;2;" #r ";" #g ";" #b
+#define BG(r, g, b) "48;2;" #r ";" #g ";" #b
+
+static const Theme themes[] = {
+	{
+		"default", "", "7", "1;7", "1;7;35", "1;7;31", "", "1", "1;33", "1", "1;35", "36", "1;34", "31",
+		{ "32", "33", "34", "35", "36", "91", "92", "94", "95" },
+	},
+	{
+		"solarized-dark",
+		BG(0, 43, 54) ";" RGB(131, 148, 150),
+		BG(7, 54, 66) ";" RGB(147, 161, 161),
+		BG(7, 54, 66) ";1;" RGB(253, 246, 227),
+		BG(7, 54, 66) ";1;" RGB(211, 54, 130),
+		BG(7, 54, 66) ";1;" RGB(220, 50, 47),
+		RGB(88, 110, 117),
+		"1;" RGB(147, 161, 161),
+		"1;" RGB(203, 75, 22),
+		"1;" RGB(147, 161, 161),
+		"1;" RGB(108, 113, 196),
+		RGB(42, 161, 152),
+		"1;" RGB(38, 139, 210),
+		RGB(220, 50, 47),
+		{ RGB(181, 137, 0), RGB(203, 75, 22), RGB(211, 54, 130), RGB(108, 113, 196), RGB(38, 139, 210),
+		  RGB(42, 161, 152), RGB(133, 153, 0), RGB(220, 50, 47) },
+	},
+	{
+		"solarized-light",
+		BG(253, 246, 227) ";" RGB(101, 123, 131),
+		BG(238, 232, 213) ";" RGB(88, 110, 117),
+		BG(238, 232, 213) ";1;" RGB(7, 54, 66),
+		BG(238, 232, 213) ";1;" RGB(211, 54, 130),
+		BG(238, 232, 213) ";1;" RGB(220, 50, 47),
+		RGB(147, 161, 161),
+		"1;" RGB(7, 54, 66),
+		"1;" RGB(203, 75, 22),
+		"1;" RGB(7, 54, 66),
+		"1;" RGB(108, 113, 196),
+		RGB(42, 161, 152),
+		"1;" RGB(38, 139, 210),
+		RGB(220, 50, 47),
+		{ RGB(181, 137, 0), RGB(203, 75, 22), RGB(211, 54, 130), RGB(108, 113, 196), RGB(38, 139, 210),
+		  RGB(42, 161, 152), RGB(133, 153, 0), RGB(220, 50, 47) },
+	},
+	{
+		"monokai",
+		BG(39, 40, 34) ";" RGB(248, 248, 242),
+		BG(62, 61, 50) ";" RGB(248, 248, 242),
+		BG(62, 61, 50) ";1;" RGB(230, 219, 116),
+		BG(62, 61, 50) ";1;" RGB(249, 38, 114),
+		BG(62, 61, 50) ";1;" RGB(253, 151, 31),
+		RGB(117, 113, 94),
+		"1;" RGB(248, 248, 242),
+		"1;" RGB(249, 38, 114),
+		"1;" RGB(230, 219, 116),
+		"1;" RGB(174, 129, 255),
+		RGB(102, 217, 239),
+		"1;" RGB(166, 226, 46),
+		RGB(249, 38, 114),
+		{ RGB(166, 226, 46), RGB(102, 217, 239), RGB(253, 151, 31), RGB(174, 129, 255), RGB(230, 219, 116),
+		  RGB(249, 38, 114) },
+	},
+	{
+		"gruvbox",
+		BG(40, 40, 40) ";" RGB(235, 219, 178),
+		BG(60, 56, 54) ";" RGB(235, 219, 178),
+		BG(60, 56, 54) ";1;" RGB(250, 189, 47),
+		BG(60, 56, 54) ";1;" RGB(211, 134, 155),
+		BG(60, 56, 54) ";1;" RGB(251, 73, 52),
+		RGB(146, 131, 116),
+		"1;" RGB(235, 219, 178),
+		"1;" RGB(254, 128, 25),
+		"1;" RGB(250, 189, 47),
+		"1;" RGB(211, 134, 155),
+		RGB(142, 192, 124),
+		"1;" RGB(131, 165, 152),
+		RGB(251, 73, 52),
+		{ RGB(184, 187, 38), RGB(250, 189, 47), RGB(131, 165, 152), RGB(211, 134, 155), RGB(142, 192, 124),
+		  RGB(254, 128, 25), RGB(251, 73, 52) },
+	},
+	{
+		"nord",
+		BG(46, 52, 64) ";" RGB(216, 222, 233),
+		BG(59, 66, 82) ";" RGB(216, 222, 233),
+		BG(59, 66, 82) ";1;" RGB(235, 203, 139),
+		BG(59, 66, 82) ";1;" RGB(180, 142, 173),
+		BG(59, 66, 82) ";1;" RGB(191, 97, 106),
+		RGB(97, 110, 136),
+		"1;" RGB(236, 239, 244),
+		"1;" RGB(208, 135, 112),
+		"1;" RGB(235, 203, 139),
+		"1;" RGB(180, 142, 173),
+		RGB(143, 188, 187),
+		"1;" RGB(129, 161, 193),
+		RGB(191, 97, 106),
+		{ RGB(136, 192, 208), RGB(163, 190, 140), RGB(235, 203, 139), RGB(208, 135, 112), RGB(180, 142, 173),
+		  RGB(143, 188, 187), RGB(129, 161, 193), RGB(191, 97, 106) },
+	},
+	{
+		"dracula",
+		BG(40, 42, 54) ";" RGB(248, 248, 242),
+		BG(68, 71, 90) ";" RGB(248, 248, 242),
+		BG(68, 71, 90) ";1;" RGB(241, 250, 140),
+		BG(68, 71, 90) ";1;" RGB(255, 121, 198),
+		BG(68, 71, 90) ";1;" RGB(255, 85, 85),
+		RGB(98, 114, 164),
+		"1;" RGB(248, 248, 242),
+		"1;" RGB(255, 184, 108),
+		"1;" RGB(241, 250, 140),
+		"1;" RGB(189, 147, 249),
+		RGB(139, 233, 253),
+		"1;" RGB(189, 147, 249),
+		RGB(255, 85, 85),
+		{ RGB(80, 250, 123), RGB(139, 233, 253), RGB(255, 184, 108), RGB(255, 121, 198), RGB(189, 147, 249),
+		  RGB(241, 250, 140), RGB(255, 85, 85) },
+	},
+};
+
+static const Theme *theme = &themes[0];
+
+int ui_set_theme(const char *name)
+{
+	for (size_t i = 0; i < sizeof(themes) / sizeof(themes[0]); i++) {
+		if (str_casecmp(themes[i].name, name) == 0) {
+			theme = &themes[i];
+			return 0;
+		}
+	}
+	return -1;
+}
+
+const char *ui_theme_name(void)
+{
+	return theme->name;
+}
+
+const char *ui_theme_at(size_t i)
+{
+	return i < sizeof(themes) / sizeof(themes[0]) ? themes[i].name : NULL;
+}
+
+static void style(Buf *out, const char *params)
+{
+	buf_puts(out, "\x1b[0");
+	if (*theme->base) {
+		buf_putc(out, ';');
+		buf_puts(out, theme->base);
+	}
+	if (params && *params) {
+		buf_putc(out, ';');
+		buf_puts(out, params);
+	}
+	buf_putc(out, 'm');
+}
+
 static const char *nick_color(const char *nick)
 {
-	static const char *colors[] = { "32", "33", "34", "35", "36", "91", "92", "93", "94", "95", "96" };
+	size_t n = 0;
+	while (n < sizeof(theme->nicks) / sizeof(theme->nicks[0]) && theme->nicks[n])
+		n++;
 	unsigned h = 5381;
 	for (const char *p = nick; *p; p++)
 		h = h * 33 + (unsigned char)*p;
-	return colors[h % (sizeof(colors) / sizeof(colors[0]))];
+	return theme->nicks[h % n];
 }
 
 typedef struct {
@@ -254,6 +429,14 @@ static void rows_push(RowList *rl, char *row)
 	rl->rows[rl->n++] = row;
 }
 
+static void put_marker(Buf *pre, const char *params)
+{
+	style(pre, params);
+	buf_puts(pre, "-!-");
+	style(pre, NULL);
+	buf_putc(pre, ' ');
+}
+
 static void render_line(const Line *ln, int width, RowList *rl)
 {
 	Buf pre;
@@ -262,45 +445,50 @@ static void render_line(const Line *ln, int width, RowList *rl)
 	char ts[16];
 	struct tm tm;
 	localtime_r(&ln->ts, &tm);
-	strftime(ts, sizeof(ts), "%H:%M ", &tm);
+	strftime(ts, sizeof(ts), "%H:%M", &tm);
+	style(&pre, theme->time);
 	buf_puts(&pre, ts);
+	style(&pre, NULL);
+	buf_putc(&pre, ' ');
 	prew += 6;
 
 	const char *user = ln->nick ? ln->nick : "";
 	const char *nick = ln->name ? ln->name : user;
 	switch (ln->kind) {
 	case LINE_MSG:
-		if (ln->own)
-			buf_printf(&pre, "<\x1b[1m%s\x1b[0m> ", nick);
-		else if (ln->highlight)
-			buf_printf(&pre, "<\x1b[1;33m%s\x1b[0m> ", nick);
-		else
-			buf_printf(&pre, "<\x1b[%sm%s\x1b[0m> ", nick_color(user), nick);
+		buf_putc(&pre, '<');
+		style(&pre, ln->own ? theme->own : ln->highlight ? theme->hl_nick : nick_color(user));
+		buf_puts(&pre, nick);
+		style(&pre, NULL);
+		buf_puts(&pre, "> ");
 		prew += str_width(nick, strlen(nick)) + 3;
 		break;
 	case LINE_ACTION:
-		buf_printf(&pre, "\x1b[1m * %s\x1b[0m ", nick);
+		style(&pre, theme->action);
+		buf_printf(&pre, " * %s", nick);
+		style(&pre, NULL);
+		buf_putc(&pre, ' ');
 		prew += str_width(nick, strlen(nick)) + 4;
 		break;
 	case LINE_EVENT:
-		buf_puts(&pre, "\x1b[36m-!-\x1b[0m ");
+		put_marker(&pre, theme->event);
 		prew += 4;
 		break;
 	case LINE_INFO:
-		buf_puts(&pre, "\x1b[1;34m-!-\x1b[0m ");
+		put_marker(&pre, theme->info);
 		prew += 4;
 		break;
 	case LINE_ERROR:
-		buf_puts(&pre, "\x1b[1;31m-!-\x1b[0m ");
+		put_marker(&pre, theme->error);
 		prew += 4;
 		break;
 	}
 
-	const char *style = "";
+	const char *text_style = NULL;
 	if (ln->kind == LINE_ERROR)
-		style = "\x1b[31m";
+		text_style = theme->error;
 	else if (ln->highlight)
-		style = "\x1b[1m";
+		text_style = theme->hl_text;
 
 	const char *text = ln->text ? ln->text : "";
 	size_t len = strlen(text);
@@ -349,9 +537,9 @@ static void render_line(const Line *ln, int width, RowList *rl)
 			buf_append(&row, pre.data, pre.len);
 		else
 			put_spaces(&row, indent);
-		buf_puts(&row, style);
+		style(&row, text_style);
 		buf_append(&row, text + row_start, row_end - row_start);
-		buf_puts(&row, "\x1b[0m");
+		style(&row, NULL);
 		rows_push(rl, buf_steal(&row));
 		if (brk == 2)
 			break;
@@ -368,9 +556,12 @@ static void render_line(const Line *ln, int width, RowList *rl)
 
 static void draw_bar(Buf *out, int row, const char *content, int content_w)
 {
-	buf_printf(out, "\x1b[%d;1H\x1b[0;37;44m%s", row, content);
+	buf_printf(out, "\x1b[%d;1H", row);
+	style(out, theme->bar);
+	buf_puts(out, content);
+	style(out, theme->bar);
 	put_spaces(out, cols - content_w);
-	buf_puts(out, "\x1b[0m");
+	style(out, NULL);
 }
 
 static const char *state_label(DdpState s)
@@ -412,7 +603,10 @@ static void draw_status(App *app, Buf *out, int row)
 
 	const char *st = state_label(app->rc.state);
 	if (st) {
-		buf_printf(&s, "\x1b[1;31m[%s]\x1b[0;37;44m ", st);
+		style(&s, theme->bar_warn);
+		buf_printf(&s, "[%s]", st);
+		style(&s, theme->bar);
+		buf_putc(&s, ' ');
 		sw += (int)strlen(st) + 3;
 	}
 
@@ -429,9 +623,10 @@ static void draw_status(App *app, Buf *out, int row)
 			sw++;
 		}
 		any = 1;
-		const char *col = a == ACT_HIGHLIGHT ? "1;35" : a == ACT_MSG ? "1;37" : "0;37";
 		snprintf(tmp, sizeof(tmp), "%zu", i + 1);
-		buf_printf(&s, "\x1b[%s;44m%s\x1b[0;37;44m", col, tmp);
+		style(&s, a == ACT_HIGHLIGHT ? theme->bar_hl : a == ACT_MSG ? theme->bar_act : theme->bar);
+		buf_puts(&s, tmp);
+		style(&s, theme->bar);
 		sw += (int)strlen(tmp);
 	}
 	if (any) {
@@ -474,12 +669,13 @@ static void draw_messages(Window *w, Buf *out, int top, int height)
 	if (visible > height)
 		visible = height;
 	for (int r = 0; r < height; r++) {
-		buf_printf(out, "\x1b[%d;1H\x1b[0m", top + r);
+		buf_printf(out, "\x1b[%d;1H", top + r);
+		style(out, NULL);
 		if (r < visible) {
 			size_t idx = (size_t)(w->scroll + visible - 1 - r);
 			buf_puts(out, all.rows[idx]);
 		}
-		buf_puts(out, "\x1b[0m\x1b[K");
+		buf_puts(out, "\x1b[K");
 	}
 	for (size_t i = 0; i < all.n; i++)
 		free(all.rows[i]);
@@ -490,7 +686,9 @@ static int draw_input(App *app, Buf *out, int row)
 {
 	Window *w = app->wins[app->cur];
 	Input *in = &app->input;
-	buf_printf(out, "\x1b[%d;1H\x1b[0m[", row);
+	buf_printf(out, "\x1b[%d;1H", row);
+	style(out, NULL);
+	buf_putc(out, '[');
 	int pw = 1 + put_trunc(out, w->name, cols / 3);
 	buf_puts(out, "] ");
 	pw += 2;

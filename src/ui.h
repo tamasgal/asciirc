@@ -36,6 +36,10 @@ int ui_cols(void);
 void ui_draw(App *app);
 void ui_redraw_all(void);
 
+int ui_set_theme(const char *name);
+const char *ui_theme_name(void);
+const char *ui_theme_at(size_t i);
+
 size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max);
 int ui_input_key(Input *in, const Key *k);
 void ui_input_set(Input *in, const char *s);

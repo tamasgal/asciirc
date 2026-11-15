@@ -23,6 +23,7 @@ typedef struct {
 	char *username;
 	int insecure;
 	int show_usernames;
+	char *theme;
 } Config;
 
 static volatile sig_atomic_t got_term;
@@ -46,7 +47,7 @@ static void usage(FILE *f)
 	      "\n"
 	      "Environment: ASCIIRC_SERVER, ASCIIRC_USER_ID, ASCIIRC_TOKEN, ASCIIRC_USERNAME\n"
 	      "Config file lines: server = ..., user_id = ..., token = ..., username = ...,\n"
-	      "                   insecure = 1, nicks = name|username\n",
+	      "                   insecure = 1, nicks = name|username, theme = name\n",
 	      f);
 }
 
@@ -102,6 +103,8 @@ static int load_config(const char *path, int required, Config *cfg)
 			set_str(&cfg->token, val);
 		else if (strcmp(key, "username") == 0)
 			set_str(&cfg->username, val);
+		else if (strcmp(key, "theme") == 0)
+			set_str(&cfg->theme, val);
 		else if (strcmp(key, "nicks") == 0)
 			cfg->show_usernames = strcmp(val, "username") == 0;
 		else if (strcmp(key, "insecure") == 0)
@@ -324,6 +327,13 @@ int main(int argc, char **argv)
 	if (opt_insecure)
 		cfg.insecure = 1;
 
+	if (cfg.theme && ui_set_theme(cfg.theme) < 0) {
+		fprintf(stderr, "asciirc: unknown theme '%s', available:", cfg.theme);
+		for (size_t i = 0; ui_theme_at(i); i++)
+			fprintf(stderr, " %s", ui_theme_at(i));
+		fputc('\n', stderr);
+		return 2;
+	}
 	if (!cfg.server) {
 		fputs("asciirc: no server given\n\n", stderr);
 		usage(stderr);
@@ -393,5 +403,6 @@ int main(int argc, char **argv)
 	free(cfg.user_id);
 	free(cfg.token);
 	free(cfg.username);
+	free(cfg.theme);
 	return rc < 0 ? 1 : 0;
 }

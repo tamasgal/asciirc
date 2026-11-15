@@ -1054,6 +1054,24 @@ static void cmd_clear(App *app)
 	app->dirty = 1;
 }
 
+static void cmd_theme(App *app, const char *arg)
+{
+	if (*arg) {
+		if (ui_set_theme(arg) < 0)
+			app_error(app, current(app), "Unknown theme: %s", arg);
+		else
+			app_info(app, current(app), "Theme set to %s, add \"theme = %s\" to the config file to keep it",
+				 ui_theme_name(), ui_theme_name());
+		return;
+	}
+	Buf b;
+	buf_init(&b);
+	for (size_t i = 0; ui_theme_at(i); i++)
+		buf_printf(&b, "%s%s", i ? ", " : "", ui_theme_at(i));
+	app_info(app, current(app), "Current theme: %s. Available: %s", ui_theme_name(), b.data);
+	buf_free(&b);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
@@ -1068,6 +1086,7 @@ static void cmd_help(App *app)
 		"/names                  list members of the current room",
 		"/topic [text]           show or set the topic",
 		"/clear                  clear the current window",
+		"/theme [name]           list themes or switch to one",
 		"/reconnect              reconnect the realtime connection",
 		"/quit                   exit",
 		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
@@ -1110,6 +1129,8 @@ static void run_command(App *app, const char *line)
 		cmd_names(app);
 	else if (strcmp(cmd, "topic") == 0)
 		cmd_topic(app, arg);
+	else if (strcmp(cmd, "theme") == 0)
+		cmd_theme(app, arg);
 	else if (strcmp(cmd, "clear") == 0)
 		cmd_clear(app);
 	else if (strcmp(cmd, "reconnect") == 0) {
