@@ -245,6 +245,7 @@ typedef struct {
 	const char *event;
 	const char *info;
 	const char *error;
+	const char *daychange;
 	const char *nicks[9];
 } Theme;
 
@@ -253,7 +254,7 @@ typedef struct {
 
 static const Theme themes[] = {
 	{
-		"default", "", "7", "1;7", "1;7;35", "1;7;31", "", "1", "1;33", "1", "1;35", "36", "1;34", "31",
+		"default", "", "7", "1;7", "1;7;35", "1;7;31", "", "1", "1;33", "1", "1;35", "36", "1;34", "31", "2",
 		{ "32", "33", "34", "35", "36", "91", "92", "94", "95" },
 	},
 	{
@@ -271,6 +272,7 @@ static const Theme themes[] = {
 		RGB(42, 161, 152),
 		"1;" RGB(38, 139, 210),
 		RGB(220, 50, 47),
+		RGB(88, 110, 117),
 		{ RGB(181, 137, 0), RGB(203, 75, 22), RGB(211, 54, 130), RGB(108, 113, 196), RGB(38, 139, 210),
 		  RGB(42, 161, 152), RGB(133, 153, 0), RGB(220, 50, 47) },
 	},
@@ -289,6 +291,7 @@ static const Theme themes[] = {
 		RGB(42, 161, 152),
 		"1;" RGB(38, 139, 210),
 		RGB(220, 50, 47),
+		RGB(147, 161, 161),
 		{ RGB(181, 137, 0), RGB(203, 75, 22), RGB(211, 54, 130), RGB(108, 113, 196), RGB(38, 139, 210),
 		  RGB(42, 161, 152), RGB(133, 153, 0), RGB(220, 50, 47) },
 	},
@@ -307,6 +310,7 @@ static const Theme themes[] = {
 		RGB(102, 217, 239),
 		"1;" RGB(166, 226, 46),
 		RGB(249, 38, 114),
+		RGB(117, 113, 94),
 		{ RGB(166, 226, 46), RGB(102, 217, 239), RGB(253, 151, 31), RGB(174, 129, 255), RGB(230, 219, 116),
 		  RGB(249, 38, 114) },
 	},
@@ -325,6 +329,7 @@ static const Theme themes[] = {
 		RGB(142, 192, 124),
 		"1;" RGB(131, 165, 152),
 		RGB(251, 73, 52),
+		RGB(146, 131, 116),
 		{ RGB(184, 187, 38), RGB(250, 189, 47), RGB(131, 165, 152), RGB(211, 134, 155), RGB(142, 192, 124),
 		  RGB(254, 128, 25), RGB(251, 73, 52) },
 	},
@@ -343,6 +348,7 @@ static const Theme themes[] = {
 		RGB(143, 188, 187),
 		"1;" RGB(129, 161, 193),
 		RGB(191, 97, 106),
+		RGB(97, 110, 136),
 		{ RGB(136, 192, 208), RGB(163, 190, 140), RGB(235, 203, 139), RGB(208, 135, 112), RGB(180, 142, 173),
 		  RGB(143, 188, 187), RGB(129, 161, 193), RGB(191, 97, 106) },
 	},
@@ -361,6 +367,7 @@ static const Theme themes[] = {
 		RGB(139, 233, 253),
 		"1;" RGB(189, 147, 249),
 		RGB(255, 85, 85),
+		RGB(98, 114, 164),
 		{ RGB(80, 250, 123), RGB(139, 233, 253), RGB(255, 184, 108), RGB(255, 121, 198), RGB(189, 147, 249),
 		  RGB(241, 250, 140), RGB(255, 85, 85) },
 	},
@@ -554,6 +561,30 @@ static void render_line(const Line *ln, int width, RowList *rl)
 	buf_free(&pre);
 }
 
+static char *render_day_change(time_t ts)
+{
+	char day[64];
+	struct tm tm;
+	localtime_r(&ts, &tm);
+	strftime(day, sizeof(day), "%a %d %b %Y", &tm);
+	Buf row;
+	buf_init(&row);
+	style(&row, theme->daychange);
+	buf_puts(&row, "00:00 ");
+	put_marker(&row, theme->daychange);
+	style(&row, theme->daychange);
+	buf_printf(&row, "Day changed to %s", day);
+	style(&row, NULL);
+	return buf_steal(&row);
+}
+
+static long day_key(time_t ts)
+{
+	struct tm tm;
+	localtime_r(&ts, &tm);
+	return (long)tm.tm_year * 1000 + tm.tm_yday;
+}
+
 static void draw_bar(Buf *out, int row, const char *content, int content_w)
 {
 	buf_printf(out, "\x1b[%d;1H", row);
@@ -660,6 +691,8 @@ static void draw_messages(Window *w, Buf *out, int top, int height)
 		for (size_t k = one.n; k > 0; k--)
 			rows_push(&all, one.rows[k - 1]);
 		free(one.rows);
+		if (i > 1 && day_key(w->lines[i - 2].ts) != day_key(w->lines[i - 1].ts))
+			rows_push(&all, render_day_change(w->lines[i - 1].ts));
 	}
 	int total = (int)all.n;
 	if (w->scroll > 0 && total < height + w->scroll)
