@@ -14,18 +14,26 @@ SRC = src/main.c src/app.c src/ui.c src/rc.c src/ws.c src/http.c src/net.c src/j
 OBJ = $(SRC:.c=.o)
 HDR = src/app.h src/ui.h src/rc.h src/ws.h src/http.h src/net.h src/json.h src/util.h
 
+TEST_OBJ = tests/test.o src/json.o src/util.o src/net.o src/http.o src/ws.o src/ui.o
+
 all: asciirc
 
 asciirc: $(OBJ)
 	$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LDLIBS)
 
-$(OBJ): $(HDR)
+$(OBJ) tests/test.o: $(HDR)
+
+tests/test: $(TEST_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(TEST_OBJ) $(LDLIBS)
+
+check: tests/test
+	./tests/test
 
 install: asciirc
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
 	cp asciirc $(DESTDIR)$(PREFIX)/bin/asciirc
 
 clean:
-	rm -f asciirc $(OBJ)
+	rm -f asciirc $(OBJ) tests/test tests/test.o
 
-.PHONY: all install clean
+.PHONY: all check install clean
