@@ -2,6 +2,8 @@
 
 A terminal Rocket.Chat client in the style of irssi.
 
+![asciirc](screenshot.png)
+
 ## Install
 
 On macOS with Homebrew:
