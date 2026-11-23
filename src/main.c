@@ -166,6 +166,48 @@ static char *read_password(const char *prompt)
 	return p;
 }
 
+static void handle_goto_key(App *app, const Key *k)
+{
+	char *t = app->goto_text;
+	size_t len = strlen(t);
+	switch (k->type) {
+	case K_CHAR:
+		if (len + strlen(k->utf8) < sizeof(app->goto_text))
+			strcat(t, k->utf8);
+		break;
+	case K_BACKSPACE:
+		while (len > 0 && ((unsigned char)t[len - 1] & 0xc0) == 0x80)
+			len--;
+		if (len > 0)
+			len--;
+		t[len] = '\0';
+		break;
+	case K_ENTER:
+		app->goto_active = 0;
+		if (app->goto_match >= 0)
+			app_switch(app, (size_t)app->goto_match);
+		return;
+	case K_ESC:
+		app->goto_active = 0;
+		return;
+	case K_TAB:
+		app_goto_cycle(app, 1);
+		return;
+	case K_BTAB:
+		app_goto_cycle(app, -1);
+		return;
+	case K_CTRL:
+		if (k->c == 'g' || k->c == 'c')
+			app->goto_active = 0;
+		else if (k->c == 'u')
+			t[0] = '\0';
+		break;
+	default:
+		break;
+	}
+	app_goto_update(app);
+}
+
 static void handle_key(App *app, const Key *k)
 {
 	Window *w = app->wins[app->cur];
@@ -174,6 +216,11 @@ static void handle_key(App *app, const Key *k)
 		page = 1;
 	if (k->type != K_TAB && k->type != K_BTAB)
 		app_tab_reset(app);
+	if (app->goto_active) {
+		handle_goto_key(app, k);
+		app->dirty = 1;
+		return;
+	}
 	switch (k->type) {
 	case K_ENTER: {
 		char *line = xstrdup(app->input.text);
@@ -213,6 +260,12 @@ static void handle_key(App *app, const Key *k)
 			app_switch(app, (app->cur + app->nwins - 1) % app->nwins);
 		else if (k->c == 'l')
 			ui_redraw_all();
+		else if (k->c == 'g') {
+			app->goto_active = 1;
+			app->goto_text[0] = '\0';
+			app_goto_update(app);
+		} else if (k->c == 'x')
+			app_jump_activity(app);
 		else
 			ui_input_key(&app->input, k);
 		break;

@@ -36,16 +36,23 @@ typedef enum {
 typedef struct {
 	char *rid;
 	char *name;
+	char *label;
 	char type;
 	char *topic;
 	Line *lines;
 	size_t nlines;
 	size_t cap;
 	Activity activity;
+	int unread;
 	int scroll;
 	int history_loaded;
 	int needs_read;
 } Window;
+
+static inline const char *win_label(const Window *w)
+{
+	return w->label ? w->label : w->name;
+}
 
 typedef struct {
 	char *rid;
@@ -87,6 +94,12 @@ typedef struct {
 	size_t comp_idx;
 	size_t comp_start;
 	size_t comp_len;
+	int goto_active;
+	char goto_text[64];
+	long goto_match;
+	size_t *goto_list;
+	size_t goto_n;
+	size_t goto_idx;
 	long long reconnect_at;
 	int reconnect_delay;
 } App;
@@ -100,6 +113,9 @@ void app_switch(App *app, size_t idx);
 void app_submit(App *app, const char *line);
 void app_tab_complete(App *app, int dir);
 void app_tab_reset(App *app);
+void app_goto_update(App *app);
+void app_goto_cycle(App *app, int dir);
+void app_jump_activity(App *app);
 void app_ddp_tick(App *app);
 void app_ddp_readable(App *app);
 

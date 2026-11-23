@@ -45,6 +45,7 @@ static void win_free(Window *w)
 	free(w->lines);
 	free(w->rid);
 	free(w->name);
+	free(w->label);
 	free(w->topic);
 	free(w);
 }
@@ -95,6 +96,7 @@ static void win_remove(App *app, Window *w)
 		app->cur--;
 	Window *c = current(app);
 	c->activity = ACT_NONE;
+	c->unread = 0;
 	if (!c->history_loaded)
 		load_history(app, c);
 	app->dirty = 1;
@@ -123,6 +125,8 @@ static void win_append(App *app, Window *w, Line *ln, int notify)
 		if (w != current(app)) {
 			if (a > w->activity)
 				w->activity = a;
+			if (a >= ACT_MSG)
+				w->unread++;
 		}
 		if (a >= ACT_MSG && w->rid)
 			w->needs_read = 1;
@@ -431,6 +435,7 @@ void app_switch(App *app, size_t idx)
 	Window *w = current(app);
 	int unread = w->activity >= ACT_MSG || w->needs_read;
 	w->activity = ACT_NONE;
+	w->unread = 0;
 	if (!w->history_loaded)
 		load_history(app, w);
 	if (unread)
@@ -457,6 +462,25 @@ static const char *sub_display_name(const Json *s)
 	return name ? name : fname ? fname : "?";
 }
 
+static void label_window(App *app, Window *w)
+{
+	if (app->show_usernames || !w->rid)
+		return;
+	for (size_t i = 0; i < app->nsubs; i++) {
+		Subscription *s = &app->subs[i];
+		if (!s->fname || strcmp(s->rid, w->rid) != 0)
+			continue;
+		if (!w->label || strcmp(w->label, s->fname) != 0) {
+			free(w->label);
+			w->label = ui_sanitize(s->fname);
+			free(w->topic);
+			w->topic = xstrdup(w->label);
+			app->dirty = 1;
+		}
+		return;
+	}
+}
+
 static Window *open_window(App *app, const char *rid, const char *name, char type)
 {
 	Window *w = win_by_rid(app, rid);
@@ -467,6 +491,7 @@ static Window *open_window(App *app, const char *rid, const char *name, char typ
 	free(wn);
 	if (type == 'd')
 		w->topic = xstrdup(w->name);
+	label_window(app, w);
 	return w;
 }
 
@@ -532,15 +557,14 @@ static int load_subscriptions(App *app, int initial)
 		if (!s->open || win_by_rid(app, s->rid))
 			continue;
 		Window *w = open_window(app, s->rid, s->name, s->type);
-		if (s->fname && !app->show_usernames) {
-			free(w->topic);
-			w->topic = ui_sanitize(s->fname);
-		}
 		if (initial && (s->unread > 0 || s->mentions > 0)) {
 			w->activity = s->mentions > 0 || s->type == 'd' ? ACT_HIGHLIGHT : ACT_MSG;
+			w->unread = s->unread;
 			w->needs_read = 1;
 		}
 	}
+	for (size_t i = 0; i < app->nwins; i++)
+		label_window(app, app->wins[i]);
 	return 0;
 }
 
@@ -577,6 +601,23 @@ static Subscription *sub_by_name(App *app, const char *name, int want_dm)
 	return NULL;
 }
 
+static void sync_unread(App *app, Window *w, const Json *sub)
+{
+	const Json *unread = json_get(sub, "unread");
+	if (!unread || unread->type != JSON_NUMBER)
+		return;
+	w->unread = (int)unread->num;
+	if (w->unread == 0 && !json_bool(json_get(sub, "alert"))) {
+		w->activity = ACT_NONE;
+		w->needs_read = 0;
+	} else if (w->unread > 0 && w->activity < ACT_MSG) {
+		w->activity = ACT_MSG;
+	}
+	if (json_num(json_get(sub, "userMentions"), 0) > 0)
+		w->activity = ACT_HIGHLIGHT;
+	app->dirty = 1;
+}
+
 static void on_stream(void *ctx, const char *coll, const char *event, const Json *args)
 {
 	App *app = ctx;
@@ -601,9 +642,11 @@ static void on_stream(void *ctx, const char *coll, const char *event, const Json
 		const Json *obj = json_at(args, 1);
 		if (strcmp(slash, "/subscriptions-changed") == 0) {
 			const char *rid = json_get_str(obj, "rid");
-			if (action && strcmp(action, "removed") != 0 && rid && !win_by_rid(app, rid) &&
-			    json_bool(json_get(obj, "open")))
+			Window *w = rid ? win_by_rid(app, rid) : NULL;
+			if (action && strcmp(action, "removed") != 0 && rid && !w && json_bool(json_get(obj, "open")))
 				load_subscriptions(app, 0);
+			else if (w && w != current(app))
+				sync_unread(app, w, obj);
 		} else if (strcmp(slash, "/rooms-changed") == 0) {
 			const char *id = json_get_str(obj, "_id");
 			Window *w = id ? win_by_rid(app, id) : NULL;
@@ -688,6 +731,12 @@ void app_init(App *app)
 	app->comp = NULL;
 	app->comp_names = NULL;
 	app->ncomp = 0;
+	app->goto_active = 0;
+	app->goto_text[0] = '\0';
+	app->goto_match = -1;
+	app->goto_list = NULL;
+	app->goto_n = 0;
+	app->goto_idx = 0;
 	app->reconnect_at = 0;
 	app->reconnect_delay = 0;
 	Window *st = win_new(app, NULL, "(status)", 0);
@@ -701,6 +750,7 @@ void app_free(App *app)
 	free(app->wins);
 	free_subs(app);
 	app_tab_reset(app);
+	free(app->goto_list);
 	for (int i = 0; i < app->input.nhistory; i++)
 		free(app->input.history[i]);
 }
@@ -805,6 +855,8 @@ static Window *query_window(App *app, const char *user)
 		rid = json_str(json_path(j, "room.rid"));
 	w = rid ? open_window(app, rid, bare, 'd') : NULL;
 	json_free(j);
+	if (w)
+		load_subscriptions(app, 0);
 	return w;
 }
 
@@ -961,7 +1013,10 @@ static void cmd_window(App *app, const char *arg)
 		app_switch(app, (app->cur + app->nwins - 1) % app->nwins);
 	} else if (!*arg || strcmp(arg, "list") == 0) {
 		for (size_t i = 0; i < app->nwins; i++)
-			app_info(app, current(app), "%3zu %s", i + 1, app->wins[i]->name);
+			if (app->wins[i]->label)
+				app_info(app, current(app), "%3zu %s (%s)", i + 1, app->wins[i]->label, app->wins[i]->name);
+			else
+				app_info(app, current(app), "%3zu %s", i + 1, app->wins[i]->name);
 	} else if (isdigit((unsigned char)arg[0])) {
 		long n = strtol(arg, NULL, 10);
 		if (n < 1 || (size_t)n > app->nwins)
@@ -1093,7 +1148,8 @@ static void cmd_help(App *app)
 		"/theme [name]           list themes or switch to one",
 		"/reconnect              reconnect the realtime connection",
 		"/quit                   exit",
-		"Keys: Alt+1..9,0 and Alt+q..o switch windows, Ctrl+N/P next/previous,",
+		"Keys: Ctrl+G go to a window by number or name, Ctrl+X jump to activity,",
+		"      Ctrl+N/P next/previous, Alt+1..9,0 and Alt+q..o switch windows,",
 		"      PgUp/PgDn scroll, Tab/Shift+Tab cycle @mentions, // sends a leading slash",
 	};
 	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
@@ -1249,4 +1305,97 @@ void app_tab_complete(App *app, int dir)
 	in->text[in->len] = '\0';
 	app->comp_len = clen;
 	app->dirty = 1;
+}
+
+static int str_icontains(const char *hay, const char *needle)
+{
+	size_t n = strlen(needle);
+	for (; *hay; hay++)
+		if (strncasecmp_ascii(hay, needle, n) == 0)
+			return 1;
+	return 0;
+}
+
+static int word_prefix(const char *s, const char *q)
+{
+	size_t n = strlen(q);
+	for (const char *p = s; p && *p; p++)
+		if ((p == s || p[-1] == ' ' || p[-1] == ',') && strncasecmp_ascii(p, q, n) == 0)
+			return 1;
+	return 0;
+}
+
+static void goto_add(App *app, int *scores, size_t i, int score)
+{
+	size_t k = app->goto_n++;
+	while (k > 0 && scores[k - 1] < score) {
+		app->goto_list[k] = app->goto_list[k - 1];
+		scores[k] = scores[k - 1];
+		k--;
+	}
+	app->goto_list[k] = i;
+	scores[k] = score;
+}
+
+void app_goto_update(App *app)
+{
+	const char *q = app->goto_text;
+	app->goto_match = -1;
+	app->goto_n = 0;
+	app->goto_idx = 0;
+	if (!*q)
+		return;
+	app->goto_list = xrealloc(app->goto_list, app->nwins * sizeof(*app->goto_list));
+	const char *p = q;
+	while (isdigit((unsigned char)*p))
+		p++;
+	if (!*p) {
+		long n = strtol(q, NULL, 10);
+		if (n >= 1 && (size_t)n <= app->nwins) {
+			app->goto_list[0] = (size_t)n - 1;
+			app->goto_n = 1;
+			app->goto_match = n - 1;
+		}
+		return;
+	}
+	int *scores = xcalloc(app->nwins, sizeof(*scores));
+	for (size_t i = 0; i < app->nwins; i++) {
+		const char *name = app->wins[i]->name;
+		const char *label = app->wins[i]->label;
+		const char *bare = name[0] == '#' ? name + 1 : name;
+		int score;
+		if (strncasecmp_ascii(bare, q, strlen(q)) == 0 || word_prefix(label, q))
+			score = 20;
+		else if (str_icontains(name, q) || (label && str_icontains(label, q)))
+			score = 10;
+		else
+			continue;
+		goto_add(app, scores, i, score + (int)app->wins[i]->activity);
+	}
+	free(scores);
+	if (app->goto_n > 0)
+		app->goto_match = (long)app->goto_list[0];
+}
+
+void app_goto_cycle(App *app, int dir)
+{
+	if (app->goto_n == 0)
+		return;
+	app->goto_idx = (app->goto_idx + app->goto_n + (size_t)(dir > 0 ? 1 : -1)) % app->goto_n;
+	app->goto_match = (long)app->goto_list[app->goto_idx];
+}
+
+void app_jump_activity(App *app)
+{
+	size_t best = app->nwins;
+	for (size_t i = 0; i < app->nwins; i++) {
+		Window *w = app->wins[i];
+		if (i == app->cur || w->activity == ACT_NONE)
+			continue;
+		if (best == app->nwins || w->activity > app->wins[best]->activity ||
+		    (w->activity == app->wins[best]->activity && w->unread > app->wins[best]->unread))
+			best = i;
+	}
+	if (best < app->nwins)
+		app_switch(app, best);
 }

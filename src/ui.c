@@ -605,6 +605,104 @@ static const char *state_label(DdpState s)
 	}
 }
 
+typedef struct {
+	size_t idx;
+	Activity act;
+	int width;
+	int shown;
+} ActEntry;
+
+static int act_entry_width(const Window *win, size_t idx)
+{
+	char tmp[32];
+	int w = snprintf(tmp, sizeof(tmp), "%zu:", idx + 1);
+	const char *label = win_label(win);
+	int lw = str_width(label, strlen(label));
+	w += lw < 20 ? lw : 20;
+	if (win->unread > 0)
+		w += snprintf(tmp, sizeof(tmp), "(%d)", win->unread);
+	return w;
+}
+
+static int draw_activity(App *app, Buf *s, int avail)
+{
+	ActEntry *e = xcalloc(app->nwins, sizeof(*e));
+	size_t n = 0;
+	for (size_t i = 0; i < app->nwins; i++) {
+		Window *win = app->wins[i];
+		if (i == app->cur || win->activity == ACT_NONE)
+			continue;
+		e[n].idx = i;
+		e[n].act = win->activity;
+		e[n].width = act_entry_width(win, i);
+		e[n].shown = 1;
+		n++;
+	}
+	if (n == 0) {
+		free(e);
+		return 0;
+	}
+	size_t shown = n;
+	for (;;) {
+		int total = 8;
+		for (size_t k = 0; k < n; k++)
+			if (e[k].shown)
+				total += e[k].width + 1;
+		char more[16] = "";
+		if (shown < n)
+			total += snprintf(more, sizeof(more), "+%zu ", n - shown);
+		if (total <= avail || shown == 0)
+			break;
+		size_t drop = n;
+		for (size_t k = 0; k < n; k++) {
+			if (!e[k].shown)
+				continue;
+			if (drop == n || e[k].act < e[drop].act ||
+			    (e[k].act == e[drop].act && app->wins[e[k].idx]->unread <= app->wins[e[drop].idx]->unread))
+				drop = k;
+		}
+		e[drop].shown = 0;
+		shown--;
+	}
+	if (shown == 0 && 13 > avail) {
+		free(e);
+		return 0;
+	}
+
+	int used = 0;
+	buf_puts(s, "[Act: ");
+	used += 6;
+	for (size_t k = 0; k < n; k++) {
+		if (!e[k].shown)
+			continue;
+		Window *win = app->wins[e[k].idx];
+		style(s, e[k].act == ACT_HIGHLIGHT ? theme->bar_hl : e[k].act == ACT_MSG ? theme->bar_act : theme->bar);
+		char tmp[32];
+		snprintf(tmp, sizeof(tmp), "%zu:", e[k].idx + 1);
+		buf_puts(s, tmp);
+		put_trunc(s, win_label(win), 20);
+		if (win->unread > 0)
+			buf_printf(s, "(%d)", win->unread);
+		style(s, theme->bar);
+		buf_putc(s, ' ');
+		used += e[k].width + 1;
+	}
+	if (shown < n) {
+		char more[16];
+		used += snprintf(more, sizeof(more), "+%zu ", n - shown);
+		buf_puts(s, more);
+	}
+	if (s->data[s->len - 1] == ' ') {
+		s->len--;
+		s->data[s->len] = '\0';
+		used--;
+	}
+	buf_puts(s, "] ");
+	used += 2;
+	free(e);
+	return used;
+}
+
 static void draw_status(App *app, Buf *out, int row)
 {
 	Window *w = app->wins[app->cur];
@@ -628,7 +726,7 @@ static void draw_status(App *app, Buf *out, int row)
 	snprintf(tmp, sizeof(tmp), "[%zu:", app->cur + 1);
 	buf_puts(&s, tmp);
 	sw += (int)strlen(tmp);
-	sw += put_trunc(&s, w->name, 30);
+	sw += put_trunc(&s, win_label(w), 30);
 	buf_puts(&s, "] ");
 	sw += 2;
 
@@ -639,34 +737,6 @@ static void draw_status(App *app, Buf *out, int row)
 		style(&s, theme->bar);
 		buf_putc(&s, ' ');
 		sw += (int)strlen(st) + 3;
-	}
-
-	int any = 0;
-	for (size_t i = 0; i < app->nwins; i++) {
-		Activity a = app->wins[i]->activity;
-		if (i == app->cur || a == ACT_NONE)
-			continue;
-		if (!any) {
-			buf_puts(&s, "[Act: ");
-			sw += 6;
-		} else {
-			buf_putc(&s, ',');
-			sw++;
-		}
-		any = 1;
-		snprintf(tmp, sizeof(tmp), "%zu", i + 1);
-		style(&s, a == ACT_HIGHLIGHT ? theme->bar_hl : a == ACT_MSG ? theme->bar_act : theme->bar);
-		buf_puts(&s, tmp);
-		style(&s, theme->bar);
-		sw += (int)strlen(tmp);
-	}
-	if (any) {
-		buf_puts(&s, "] ");
-		sw += 2;
-	}
-	if (w->scroll > 0) {
-		buf_puts(&s, "-- more --");
-		sw += 10;
 	}
 
 	Buf hint;
@@ -680,13 +750,24 @@ static void draw_status(App *app, Buf *out, int row)
 		hw += put_trunc(&hint, app->comp_names[app->comp_idx], cols / 2);
 		buf_putc(&hint, ']');
 		style(&hint, theme->bar);
-		int sep = s.len > 0 && s.data[s.len - 1] != ' ';
-		if (sw + hw + sep <= cols) {
-			if (sep)
-				buf_putc(&s, ' ');
-			buf_append(&s, hint.data, hint.len);
-			sw += hw + sep;
-		}
+	} else if (app->goto_active && app->goto_n > 0) {
+		snprintf(tmp, sizeof(tmp), "[Goto %zu/%zu: ", app->goto_idx + 1, app->goto_n);
+		style(&hint, theme->bar_act);
+		buf_puts(&hint, tmp);
+		hw = (int)strlen(tmp) + 1;
+		hw += put_trunc(&hint, win_label(app->wins[app->goto_match]), cols / 2);
+		buf_putc(&hint, ']');
+		style(&hint, theme->bar);
+	}
+	int reserved = (w->scroll > 0 ? 11 : 0) + (hw > 0 ? hw + 1 : 0);
+	sw += draw_activity(app, &s, cols - sw - reserved);
+	if (w->scroll > 0) {
+		buf_puts(&s, "-- more -- ");
+		sw += 11;
+	}
+	if (hw > 0 && sw + hw <= cols) {
+		buf_append(&s, hint.data, hint.len);
+		sw += hw;
 	}
 
 	if (sw > cols) {
@@ -701,7 +782,7 @@ static void draw_status(App *app, Buf *out, int row)
 			buf_append(&s, hint.data, hint.len);
 			sw += hw + 1;
 		}
-		sw += put_trunc(&s, w->name, cols - sw > 0 ? cols - sw : 0);
+		sw += put_trunc(&s, win_label(w), cols - sw > 0 ? cols - sw : 0);
 	}
 	buf_free(&hint);
 	draw_bar(out, row, s.data, sw);
@@ -741,14 +822,41 @@ static void draw_messages(Window *w, Buf *out, int top, int height)
 	free(all.rows);
 }
 
+static int draw_goto(App *app, Buf *out, int row)
+{
+	buf_printf(out, "\x1b[%d;1H", row);
+	style(out, theme->bar_act);
+	buf_puts(out, "[goto]");
+	style(out, NULL);
+	buf_putc(out, ' ');
+	int col = 8 + put_trunc(out, app->goto_text, cols / 3);
+	style(out, theme->time);
+	if (app->goto_match >= 0) {
+		Window *m = app->wins[app->goto_match];
+		char tmp[32];
+		snprintf(tmp, sizeof(tmp), "  -> %ld:", app->goto_match + 1);
+		buf_puts(out, tmp);
+		put_trunc(out, win_label(m), cols - col - (int)strlen(tmp) - 1);
+	} else if (app->goto_text[0]) {
+		buf_puts(out, "  no match");
+	} else {
+		buf_puts(out, "  number or part of a name, Tab cycles, Enter switches, Esc cancels");
+	}
+	style(out, NULL);
+	buf_puts(out, "\x1b[K");
+	return col;
+}
+
 static int draw_input(App *app, Buf *out, int row)
 {
+	if (app->goto_active)
+		return draw_goto(app, out, row);
 	Window *w = app->wins[app->cur];
 	Input *in = &app->input;
 	buf_printf(out, "\x1b[%d;1H", row);
 	style(out, NULL);
 	buf_putc(out, '[');
-	int pw = 1 + put_trunc(out, w->name, cols / 3);
+	int pw = 1 + put_trunc(out, win_label(w), cols / 3);
 	buf_puts(out, "] ");
 	pw += 2;
 
@@ -793,7 +901,7 @@ void ui_draw(App *app)
 	Buf top;
 	buf_init(&top);
 	buf_putc(&top, ' ');
-	int tw = 1 + put_trunc(&top, w->topic && *w->topic ? w->topic : w->name, cols - 1);
+	int tw = 1 + put_trunc(&top, w->topic && *w->topic ? w->topic : win_label(w), cols - 1);
 	draw_bar(&out, 1, top.data, tw);
 	buf_free(&top);
 
@@ -815,7 +923,9 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 		unsigned char c = p[i];
 		if (c == 0x1b) {
 			if (i + 1 >= n) {
+				k.type = K_ESC;
 				i++;
+				keys[nk++] = k;
 				continue;
 			}
 			if (p[i + 1] == '[') {
