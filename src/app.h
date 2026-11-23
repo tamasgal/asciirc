@@ -36,7 +36,10 @@ typedef enum {
 	ACT_HIGHLIGHT
 } Activity;
 
+typedef struct Server Server;
+
 typedef struct {
+	Server *srv;
 	char *rid;
 	char *name;
 	char *label;
@@ -67,6 +70,21 @@ typedef struct {
 	int mentions;
 } Subscription;
 
+struct Server {
+	struct App *app;
+	char *name;
+	Rc rc;
+	Subscription *subs;
+	size_t nsubs;
+	int ever_ready;
+	long long reconnect_at;
+	int reconnect_delay;
+	char **tctx_id;
+	char **tctx_text;
+	size_t ntctx;
+	int tctx_budget;
+};
+
 #define INPUT_MAX 8192
 #define HISTORY_MAX 100
 
@@ -79,17 +97,16 @@ typedef struct {
 	int hpos;
 } Input;
 
-typedef struct {
-	Rc rc;
+typedef struct App {
+	Server **servers;
+	size_t nservers;
+	Server *status_srv;
 	Window **wins;
 	size_t nwins;
 	size_t cur;
-	Subscription *subs;
-	size_t nsubs;
 	Input input;
 	int quit;
 	int dirty;
-	int ever_ready;
 	int show_usernames;
 	char **comp;
 	char **comp_names;
@@ -111,18 +128,18 @@ typedef struct {
 	const char **react_list;
 	size_t react_n;
 	size_t react_idx;
-	char **tctx_id;
-	char **tctx_text;
-	size_t ntctx;
-	int tctx_budget;
-	long long reconnect_at;
-	int reconnect_delay;
 } App;
+
+static inline Server *win_server(const App *app, const Window *w)
+{
+	return w && w->srv ? w->srv : app->status_srv;
+}
 
 void app_init(App *app);
 void app_free(App *app);
 void app_info(App *app, Window *w, const char *fmt, ...);
 void app_error(App *app, Window *w, const char *fmt, ...);
+Server *app_add_server(App *app, const char *name, const Rc *rc);
 void app_start(App *app);
 void app_switch(App *app, size_t idx);
 void app_submit(App *app, const char *line);
@@ -141,6 +158,7 @@ void app_react_update(App *app);
 void app_react_cycle(App *app, int dir);
 void app_react_send(App *app);
 void app_ddp_tick(App *app);
-void app_ddp_readable(App *app);
+void app_ddp_readable(App *app, Server *srv);
+long long app_next_reconnect(const App *app);
 
 #endif

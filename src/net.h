@@ -9,6 +9,7 @@ typedef struct {
 	char host[256];
 	char port[8];
 	char path[512];
+	int insecure;
 } Url;
 
 typedef struct Conn Conn;
@@ -17,7 +18,6 @@ typedef struct Conn Conn;
 
 int url_parse(const char *s, Url *u);
 
-void net_init(int insecure);
 Conn *net_connect(const Url *u, char *err, size_t errlen);
 void net_close(Conn *c);
 int net_fd(const Conn *c);

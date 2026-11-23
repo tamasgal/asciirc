@@ -27,9 +27,10 @@ static void line_free(Line *ln)
 	free(ln->tmid);
 }
 
-static Window *win_new(App *app, const char *rid, const char *name, char type)
+static Window *win_new(App *app, Server *srv, const char *rid, const char *name, char type)
 {
 	Window *w = xcalloc(1, sizeof(*w));
+	w->srv = srv;
 	w->rid = rid ? xstrdup(rid) : NULL;
 	w->name = ui_sanitize(name);
 	w->type = type;
@@ -59,20 +60,20 @@ static size_t win_index(const App *app, const Window *w)
 	return 0;
 }
 
-static Window *win_by_rid(App *app, const char *rid)
+static Window *win_by_rid(App *app, Server *srv, const char *rid)
 {
 	for (size_t i = 0; i < app->nwins; i++)
-		if (app->wins[i]->rid && strcmp(app->wins[i]->rid, rid) == 0)
+		if (app->wins[i]->srv == srv && app->wins[i]->rid && strcmp(app->wins[i]->rid, rid) == 0)
 			return app->wins[i];
 	return NULL;
 }
 
-static Window *win_by_name(App *app, const char *name)
+static Window *win_by_name(App *app, Server *srv, const char *name)
 {
 	const char *bare = name[0] == '#' ? name + 1 : name;
 	for (size_t i = 0; i < app->nwins; i++) {
 		const char *wn = app->wins[i]->name;
-		if (app->wins[i]->rid && str_casecmp(wn[0] == '#' ? wn + 1 : wn, bare) == 0)
+		if (app->wins[i]->srv == srv && app->wins[i]->rid && str_casecmp(wn[0] == '#' ? wn + 1 : wn, bare) == 0)
 			return app->wins[i];
 	}
 	return NULL;
@@ -81,6 +82,11 @@ static Window *win_by_name(App *app, const char *name)
 static Window *current(App *app)
 {
 	return app->wins[app->cur];
+}
+
+static Server *cur_srv(App *app)
+{
+	return win_server(app, current(app));
 }
 
 static void load_history(App *app, Window *w);
@@ -175,6 +181,19 @@ void app_error(App *app, Window *w, const char *fmt, ...)
 	va_end(ap);
 }
 
+static void srv_msg(Server *srv, LineKind kind, const char *fmt, ...)
+{
+	char tmp[4096];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(tmp, sizeof(tmp), fmt, ap);
+	va_end(ap);
+	if (srv->app->nservers > 1)
+		(kind == LINE_ERROR ? app_error : app_info)(srv->app, NULL, "[%s] %s", srv->name, tmp);
+	else
+		(kind == LINE_ERROR ? app_error : app_info)(srv->app, NULL, "%s", tmp);
+}
+
 static Line *find_line(Window *w, const char *msgid)
 {
 	for (size_t i = w->nlines; i > 0; i--)
@@ -239,7 +258,7 @@ static int mentions_me(const Json *m, const char *me)
 	return 0;
 }
 
-static void describe_attachments(App *app, Buf *b, const Json *m)
+static void describe_attachments(Server *srv, Buf *b, const Json *m)
 {
 	const Json *atts = json_get(m, "attachments");
 	for (size_t i = 0; i < json_len(atts); i++) {
@@ -254,7 +273,7 @@ static void describe_attachments(App *app, Buf *b, const Json *m)
 		if (link) {
 			buf_printf(b, "[file] %s ", title ? title : "");
 			if (link[0] == '/')
-				base_url(&app->rc.url, b);
+				base_url(&srv->rc.url, b);
 			buf_puts(b, link);
 			if (desc && *desc)
 				buf_printf(b, " %s", desc);
@@ -272,9 +291,9 @@ static void describe_attachments(App *app, Buf *b, const Json *m)
 	}
 }
 
-static int is_me(App *app, const char *user)
+static int is_me(Server *srv, const char *user)
 {
-	return user && app->rc.username && strcmp(user, app->rc.username) == 0;
+	return user && srv->rc.username && strcmp(user, srv->rc.username) == 0;
 }
 
 static void put_snippet(Buf *b, const char *s, size_t max)
@@ -314,6 +333,7 @@ static const Json *find_msg(const Json *arr, const char *id)
 
 static char *thread_context(App *app, Window *w, const char *tmid, const Json *scope)
 {
+	Server *srv = w->srv;
 	Buf b;
 	buf_init(&b);
 	Line *p = find_line(w, tmid);
@@ -330,19 +350,19 @@ static char *thread_context(App *app, Window *w, const char *tmid, const Json *s
 		put_context(app, &b, pm);
 		return buf_steal(&b);
 	}
-	for (size_t i = 0; i < app->ntctx; i++)
-		if (strcmp(app->tctx_id[i], tmid) == 0)
-			return app->tctx_text[i] ? xstrdup(app->tctx_text[i]) : NULL;
-	if (app->tctx_budget == 0)
+	for (size_t i = 0; i < srv->ntctx; i++)
+		if (strcmp(srv->tctx_id[i], tmid) == 0)
+			return srv->tctx_text[i] ? xstrdup(srv->tctx_text[i]) : NULL;
+	if (srv->tctx_budget == 0)
 		return NULL;
-	if (app->tctx_budget > 0)
-		app->tctx_budget--;
+	if (srv->tctx_budget > 0)
+		srv->tctx_budget--;
 	Buf path;
 	buf_init(&path);
 	buf_puts(&path, "/api/v1/chat.getMessage?msgId=");
 	url_encode(&path, tmid);
 	Err e;
-	Json *j = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	Json *j = rc_get(&srv->rc, path.data, e.err, sizeof(e.err));
 	buf_free(&path);
 	const Json *jm = json_get(j, "message");
 	char *text = NULL;
@@ -351,16 +371,16 @@ static char *thread_context(App *app, Window *w, const char *tmid, const Json *s
 		text = buf_steal(&b);
 	}
 	json_free(j);
-	app->tctx_id = xrealloc(app->tctx_id, (app->ntctx + 1) * sizeof(*app->tctx_id));
-	app->tctx_text = xrealloc(app->tctx_text, (app->ntctx + 1) * sizeof(*app->tctx_text));
-	app->tctx_id[app->ntctx] = xstrdup(tmid);
-	app->tctx_text[app->ntctx] = text;
-	app->ntctx++;
+	srv->tctx_id = xrealloc(srv->tctx_id, (srv->ntctx + 1) * sizeof(*srv->tctx_id));
+	srv->tctx_text = xrealloc(srv->tctx_text, (srv->ntctx + 1) * sizeof(*srv->tctx_text));
+	srv->tctx_id[srv->ntctx] = xstrdup(tmid);
+	srv->tctx_text[srv->ntctx] = text;
+	srv->ntctx++;
 	buf_free(&b);
 	return text ? xstrdup(text) : NULL;
 }
 
-static void describe_meta(App *app, Buf *b, const Json *m)
+static void describe_meta(App *app, Server *srv, Buf *b, const Json *m)
 {
 	const Json *r = json_get(m, "reactions");
 	for (size_t i = 0; r && r->type == JSON_OBJECT && i < r->len; i++) {
@@ -378,7 +398,7 @@ static void describe_meta(App *app, Buf *b, const Json *m)
 			const char *nm = json_str(json_at(names, k));
 			if (k)
 				buf_puts(b, ", ");
-			buf_puts(b, is_me(app, u) ? "you" : nm && *nm ? nm : u ? u : "?");
+			buf_puts(b, is_me(srv, u) ? "you" : nm && *nm ? nm : u ? u : "?");
 		}
 		if (n > 3)
 			buf_printf(b, " +%zu", n - 3);
@@ -393,6 +413,7 @@ static void describe_meta(App *app, Buf *b, const Json *m)
 
 static int msg_to_line(App *app, const Json *m, Window *w, Line *ln, const Json *scope)
 {
+	Server *srv = w->srv;
 	memset(ln, 0, sizeof(*ln));
 	const char *id = json_get_str(m, "_id");
 	const char *user = json_str(json_path(m, "u.username"));
@@ -427,7 +448,7 @@ static int msg_to_line(App *app, const Json *m, Window *w, Line *ln, const Json 
 		size_t before = text.len;
 		Buf att;
 		buf_init(&att);
-		describe_attachments(app, &att, m);
+		describe_attachments(srv, &att, m);
 		if (att.len) {
 			if (before > 0 && msg[0])
 				buf_putc(&text, '\n');
@@ -467,7 +488,7 @@ static int msg_to_line(App *app, const Json *m, Window *w, Line *ln, const Json 
 	if (ln->kind == LINE_MSG) {
 		Buf meta;
 		buf_init(&meta);
-		describe_meta(app, &meta, m);
+		describe_meta(app, srv, &meta, m);
 		if (meta.len) {
 			char *ms = ui_sanitize(meta.data);
 			buf_putc(&full, '\n');
@@ -480,9 +501,9 @@ static int msg_to_line(App *app, const Json *m, Window *w, Line *ln, const Json 
 	ln->text = buf_steal(&full);
 	ln->msgid = id ? xstrdup(id) : NULL;
 	ln->raw = xstrdup(msg);
-	ln->own = is_me(app, user);
+	ln->own = is_me(srv, user);
 	if (!ln->own && ln->kind == LINE_MSG)
-		ln->highlight = w->type == 'd' || mentions_me(m, app->rc.username);
+		ln->highlight = w->type == 'd' || mentions_me(m, srv->rc.username);
 	return 0;
 }
 
@@ -535,7 +556,7 @@ static void load_history(App *app, Window *w)
 	url_encode(&path, w->rid);
 	buf_printf(&path, "&count=%d", HISTORY_COUNT);
 	Err e;
-	Json *j = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	Json *j = rc_get(&w->srv->rc, path.data, e.err, sizeof(e.err));
 	buf_free(&path);
 	if (!j) {
 		app_error(app, w, "Could not load history: %s", e.err);
@@ -545,7 +566,7 @@ static void load_history(App *app, Window *w)
 	size_t n = json_len(msgs);
 	Line *hist = xcalloc(n ? n : 1, sizeof(*hist));
 	size_t nh = 0;
-	app->tctx_budget = 10;
+	w->srv->tctx_budget = 10;
 	for (size_t i = n; i > 0; i--) {
 		Line ln;
 		if (msg_to_line(app, json_at(msgs, i - 1), w, &ln, msgs) < 0)
@@ -564,7 +585,7 @@ static void load_history(App *app, Window *w)
 		}
 		hist[nh++] = ln;
 	}
-	app->tctx_budget = -1;
+	w->srv->tctx_budget = -1;
 	json_free(j);
 
 	size_t total = nh + w->nlines;
@@ -584,7 +605,7 @@ static void load_history(App *app, Window *w)
 	app->dirty = 1;
 }
 
-static void mark_read(App *app, Window *w)
+static void mark_read(Window *w)
 {
 	w->needs_read = 0;
 	if (!w->rid)
@@ -595,10 +616,10 @@ static void mark_read(App *app, Window *w)
 	buf_json_str(&body, w->rid);
 	buf_puts(&body, "}");
 	Err e;
-	Json *j = rc_post(&app->rc, "/api/v1/subscriptions.read", body.data, e.err, sizeof(e.err));
+	Json *j = rc_post(&w->srv->rc, "/api/v1/subscriptions.read", body.data, e.err, sizeof(e.err));
 	buf_free(&body);
 	if (!j)
-		app_error(app, NULL, "Could not mark %s as read: %s", w->name, e.err);
+		srv_msg(w->srv, LINE_ERROR, "Could not mark %s as read: %s", w->name, e.err);
 	json_free(j);
 }
 
@@ -610,7 +631,7 @@ void app_switch(App *app, size_t idx)
 		reset_modes(app);
 	Window *old = current(app);
 	if (old->needs_read && idx != app->cur)
-		mark_read(app, old);
+		mark_read(old);
 	app->cur = idx;
 	Window *w = current(app);
 	int unread = w->activity >= ACT_MSG || w->needs_read;
@@ -619,7 +640,7 @@ void app_switch(App *app, size_t idx)
 	if (!w->history_loaded)
 		load_history(app, w);
 	if (unread)
-		mark_read(app, w);
+		mark_read(w);
 	app->dirty = 1;
 }
 
@@ -646,8 +667,8 @@ static void label_window(App *app, Window *w)
 {
 	if (app->show_usernames || !w->rid)
 		return;
-	for (size_t i = 0; i < app->nsubs; i++) {
-		Subscription *s = &app->subs[i];
+	for (size_t i = 0; i < w->srv->nsubs; i++) {
+		Subscription *s = &w->srv->subs[i];
 		if (!s->fname || strcmp(s->rid, w->rid) != 0)
 			continue;
 		if (!w->label || strcmp(w->label, s->fname) != 0) {
@@ -661,13 +682,13 @@ static void label_window(App *app, Window *w)
 	}
 }
 
-static Window *open_window(App *app, const char *rid, const char *name, char type)
+static Window *open_window(App *app, Server *srv, const char *rid, const char *name, char type)
 {
-	Window *w = win_by_rid(app, rid);
+	Window *w = win_by_rid(app, srv, rid);
 	if (w)
 		return w;
 	char *wn = window_name(name, type);
-	w = win_new(app, rid, wn, type);
+	w = win_new(app, srv, rid, wn, type);
 	free(wn);
 	if (type == 'd')
 		w->topic = xstrdup(w->name);
@@ -689,37 +710,37 @@ static int sub_cmp(const void *pa, const void *pb)
 	return str_casecmp(a->name, b->name);
 }
 
-static void free_subs(App *app)
+static void free_subs(Server *srv)
 {
-	for (size_t i = 0; i < app->nsubs; i++) {
-		free(app->subs[i].rid);
-		free(app->subs[i].name);
-		free(app->subs[i].fname);
+	for (size_t i = 0; i < srv->nsubs; i++) {
+		free(srv->subs[i].rid);
+		free(srv->subs[i].name);
+		free(srv->subs[i].fname);
 	}
-	free(app->subs);
-	app->subs = NULL;
-	app->nsubs = 0;
+	free(srv->subs);
+	srv->subs = NULL;
+	srv->nsubs = 0;
 }
 
-static int load_subscriptions(App *app, int initial)
+static int load_subscriptions(App *app, Server *srv, int initial)
 {
 	Err e;
-	Json *j = rc_get(&app->rc, "/api/v1/subscriptions.get", e.err, sizeof(e.err));
+	Json *j = rc_get(&srv->rc, "/api/v1/subscriptions.get", e.err, sizeof(e.err));
 	if (!j) {
-		app_error(app, NULL, "Could not load subscriptions: %s", e.err);
+		srv_msg(srv, LINE_ERROR, "Could not load subscriptions: %s", e.err);
 		return -1;
 	}
 	const Json *upd = json_get(j, "update");
 	size_t n = json_len(upd);
-	free_subs(app);
-	app->subs = xcalloc(n ? n : 1, sizeof(*app->subs));
+	free_subs(srv);
+	srv->subs = xcalloc(n ? n : 1, sizeof(*srv->subs));
 	for (size_t i = 0; i < n; i++) {
 		const Json *s = json_at(upd, i);
 		const char *rid = json_get_str(s, "rid");
 		const char *t = json_get_str(s, "t");
 		if (!rid || !t)
 			continue;
-		Subscription *sub = &app->subs[app->nsubs++];
+		Subscription *sub = &srv->subs[srv->nsubs++];
 		sub->rid = xstrdup(rid);
 		sub->name = xstrdup(sub_display_name(s));
 		const char *fname = json_get_str(s, "fname");
@@ -730,13 +751,13 @@ static int load_subscriptions(App *app, int initial)
 		sub->mentions = (int)json_num(json_get(s, "userMentions"), 0);
 	}
 	json_free(j);
-	qsort(app->subs, app->nsubs, sizeof(*app->subs), sub_cmp);
+	qsort(srv->subs, srv->nsubs, sizeof(*srv->subs), sub_cmp);
 
-	for (size_t i = 0; i < app->nsubs; i++) {
-		Subscription *s = &app->subs[i];
-		if (!s->open || win_by_rid(app, s->rid))
+	for (size_t i = 0; i < srv->nsubs; i++) {
+		Subscription *s = &srv->subs[i];
+		if (!s->open || win_by_rid(app, srv, s->rid))
 			continue;
-		Window *w = open_window(app, s->rid, s->name, s->type);
+		Window *w = open_window(app, srv, s->rid, s->name, s->type);
 		if (initial && (s->unread > 0 || s->mentions > 0)) {
 			w->activity = s->mentions > 0 || s->type == 'd' ? ACT_HIGHLIGHT : ACT_MSG;
 			w->unread = s->unread;
@@ -744,16 +765,17 @@ static int load_subscriptions(App *app, int initial)
 		}
 	}
 	for (size_t i = 0; i < app->nwins; i++)
-		label_window(app, app->wins[i]);
+		if (app->wins[i]->srv == srv)
+			label_window(app, app->wins[i]);
 	return 0;
 }
 
-static void load_topics(App *app)
+static void load_topics(App *app, Server *srv)
 {
 	Err e;
-	Json *j = rc_get(&app->rc, "/api/v1/rooms.get", e.err, sizeof(e.err));
+	Json *j = rc_get(&srv->rc, "/api/v1/rooms.get", e.err, sizeof(e.err));
 	if (!j) {
-		app_error(app, NULL, "Could not load room topics: %s", e.err);
+		srv_msg(srv, LINE_ERROR, "Could not load room topics: %s", e.err);
 		return;
 	}
 	const Json *upd = json_get(j, "update");
@@ -761,7 +783,7 @@ static void load_topics(App *app)
 		const Json *r = json_at(upd, i);
 		const char *id = json_get_str(r, "_id");
 		const char *topic = json_get_str(r, "topic");
-		Window *w = id ? win_by_rid(app, id) : NULL;
+		Window *w = id ? win_by_rid(app, srv, id) : NULL;
 		if (w && w->type != 'd' && topic) {
 			free(w->topic);
 			w->topic = ui_sanitize(topic);
@@ -770,11 +792,11 @@ static void load_topics(App *app)
 	json_free(j);
 }
 
-static Subscription *sub_by_name(App *app, const char *name, int want_dm)
+static Subscription *sub_by_name(Server *srv, const char *name, int want_dm)
 {
 	const char *bare = name[0] == '#' ? name + 1 : name;
-	for (size_t i = 0; i < app->nsubs; i++) {
-		Subscription *s = &app->subs[i];
+	for (size_t i = 0; i < srv->nsubs; i++) {
+		Subscription *s = &srv->subs[i];
 		if ((s->type == 'd') == want_dm && str_casecmp(s->name, bare) == 0)
 			return s;
 	}
@@ -800,16 +822,17 @@ static void sync_unread(App *app, Window *w, const Json *sub)
 
 static void on_stream(void *ctx, const char *coll, const char *event, const Json *args)
 {
-	App *app = ctx;
+	Server *srv = ctx;
+	App *app = srv->app;
 	if (strcmp(coll, "stream-room-messages") == 0) {
 		const Json *m = json_at(args, 0);
 		const char *rid = json_get_str(m, "rid");
 		if (!rid)
 			return;
-		Window *w = win_by_rid(app, rid);
+		Window *w = win_by_rid(app, srv, rid);
 		if (!w) {
-			load_subscriptions(app, 0);
-			w = win_by_rid(app, rid);
+			load_subscriptions(app, srv, 0);
+			w = win_by_rid(app, srv, rid);
 			if (!w)
 				return;
 		}
@@ -822,14 +845,14 @@ static void on_stream(void *ctx, const char *coll, const char *event, const Json
 		const Json *obj = json_at(args, 1);
 		if (strcmp(slash, "/subscriptions-changed") == 0) {
 			const char *rid = json_get_str(obj, "rid");
-			Window *w = rid ? win_by_rid(app, rid) : NULL;
+			Window *w = rid ? win_by_rid(app, srv, rid) : NULL;
 			if (action && strcmp(action, "removed") != 0 && rid && !w && json_bool(json_get(obj, "open")))
-				load_subscriptions(app, 0);
+				load_subscriptions(app, srv, 0);
 			else if (w && w != current(app))
 				sync_unread(app, w, obj);
 		} else if (strcmp(slash, "/rooms-changed") == 0) {
 			const char *id = json_get_str(obj, "_id");
-			Window *w = id ? win_by_rid(app, id) : NULL;
+			Window *w = id ? win_by_rid(app, srv, id) : NULL;
 			const char *topic = json_get_str(obj, "topic");
 			if (w && topic && (!w->topic || strcmp(w->topic, topic) != 0)) {
 				free(w->topic);
@@ -842,71 +865,82 @@ static void on_stream(void *ctx, const char *coll, const char *event, const Json
 
 static void on_status(void *ctx, int is_error, const char *text)
 {
-	App *app = ctx;
-	if (is_error)
-		app_error(app, NULL, "%s", text);
-	else
-		app_info(app, NULL, "%s", text);
+	srv_msg(ctx, is_error ? LINE_ERROR : LINE_INFO, "%s", text);
 }
 
 static void on_ready(void *ctx)
 {
-	App *app = ctx;
-	app->reconnect_delay = 0;
-	app_info(app, NULL, "Realtime connection established");
-	if (app->ever_ready) {
-		load_subscriptions(app, 0);
+	Server *srv = ctx;
+	App *app = srv->app;
+	srv->reconnect_delay = 0;
+	srv_msg(srv, LINE_INFO, "Realtime connection established");
+	if (srv->ever_ready) {
+		load_subscriptions(app, srv, 0);
 		for (size_t i = 0; i < app->nwins; i++)
-			if (app->wins[i]->history_loaded)
+			if (app->wins[i]->srv == srv && app->wins[i]->history_loaded)
 				load_history(app, app->wins[i]);
 	}
-	app->ever_ready = 1;
+	srv->ever_ready = 1;
 }
 
 static const RcHandlers handlers = { on_stream, on_status, on_ready };
 
-static void schedule_reconnect(App *app)
+static void schedule_reconnect(Server *srv)
 {
-	app->reconnect_delay = app->reconnect_delay ? app->reconnect_delay * 2 : 2;
-	if (app->reconnect_delay > RECONNECT_MAX)
-		app->reconnect_delay = RECONNECT_MAX;
-	app->reconnect_at = now_ms() + app->reconnect_delay * 1000LL;
-	app_info(app, NULL, "Reconnecting in %d seconds", app->reconnect_delay);
+	srv->reconnect_delay = srv->reconnect_delay ? srv->reconnect_delay * 2 : 2;
+	if (srv->reconnect_delay > RECONNECT_MAX)
+		srv->reconnect_delay = RECONNECT_MAX;
+	srv->reconnect_at = now_ms() + srv->reconnect_delay * 1000LL;
+	srv_msg(srv, LINE_INFO, "Reconnecting in %d seconds", srv->reconnect_delay);
 }
 
 void app_ddp_tick(App *app)
 {
-	if (app->rc.state != DDP_OFFLINE || app->reconnect_at < 0 || now_ms() < app->reconnect_at)
-		return;
-	Err e;
-	app_info(app, NULL, "Connecting to realtime API");
-	app->dirty = 1;
-	if (rc_ddp_connect(&app->rc, e.err, sizeof(e.err)) < 0) {
-		app_error(app, NULL, "Realtime connection failed: %s", e.err);
-		schedule_reconnect(app);
+	for (size_t i = 0; i < app->nservers; i++) {
+		Server *srv = app->servers[i];
+		if (srv->rc.state != DDP_OFFLINE || srv->reconnect_at < 0 || now_ms() < srv->reconnect_at)
+			continue;
+		Err e;
+		srv_msg(srv, LINE_INFO, "Connecting to realtime API");
+		app->dirty = 1;
+		if (rc_ddp_connect(&srv->rc, e.err, sizeof(e.err)) < 0) {
+			srv_msg(srv, LINE_ERROR, "Realtime connection failed: %s", e.err);
+			schedule_reconnect(srv);
+		}
 	}
 }
 
-void app_ddp_readable(App *app)
+void app_ddp_readable(App *app, Server *srv)
 {
-	if (rc_ddp_process(&app->rc, &handlers, app) < 0) {
-		app_error(app, NULL, "Realtime connection lost");
-		schedule_reconnect(app);
+	if (rc_ddp_process(&srv->rc, &handlers, srv) < 0) {
+		srv_msg(srv, LINE_ERROR, "Realtime connection lost");
+		schedule_reconnect(srv);
 	}
 	app->dirty = 1;
+}
+
+long long app_next_reconnect(const App *app)
+{
+	long long next = -1;
+	for (size_t i = 0; i < app->nservers; i++) {
+		const Server *srv = app->servers[i];
+		if (srv->rc.state == DDP_OFFLINE && srv->reconnect_at >= 0 && (next < 0 || srv->reconnect_at < next))
+			next = srv->reconnect_at;
+	}
+	return next;
 }
 
 void app_init(App *app)
 {
+	app->servers = NULL;
+	app->nservers = 0;
+	app->status_srv = NULL;
 	app->wins = NULL;
 	app->nwins = 0;
 	app->cur = 0;
-	app->subs = NULL;
-	app->nsubs = 0;
 	memset(&app->input, 0, sizeof(app->input));
 	app->quit = 0;
 	app->dirty = 1;
-	app->ever_ready = 0;
 	app->show_usernames = 0;
 	app->comp = NULL;
 	app->comp_names = NULL;
@@ -923,13 +957,7 @@ void app_init(App *app)
 	app->react_active = 0;
 	app->react_list = NULL;
 	app->react_n = 0;
-	app->tctx_id = NULL;
-	app->tctx_text = NULL;
-	app->ntctx = 0;
-	app->tctx_budget = -1;
-	app->reconnect_at = 0;
-	app->reconnect_delay = 0;
-	Window *st = win_new(app, NULL, "(status)", 0);
+	Window *st = win_new(app, NULL, NULL, "(status)", 0);
 	st->history_loaded = 1;
 }
 
@@ -938,36 +966,69 @@ void app_free(App *app)
 	for (size_t i = 0; i < app->nwins; i++)
 		win_free(app->wins[i]);
 	free(app->wins);
-	free_subs(app);
+	for (size_t i = 0; i < app->nservers; i++) {
+		Server *srv = app->servers[i];
+		free_subs(srv);
+		for (size_t k = 0; k < srv->ntctx; k++) {
+			free(srv->tctx_id[k]);
+			free(srv->tctx_text[k]);
+		}
+		free(srv->tctx_id);
+		free(srv->tctx_text);
+		rc_free(&srv->rc);
+		free(srv->name);
+		free(srv);
+	}
+	free(app->servers);
 	app_tab_reset(app);
 	free(app->goto_list);
 	free(app->sel_id);
 	free(app->reply_tmid);
 	free(app->reply_to);
 	free(app->react_list);
-	for (size_t i = 0; i < app->ntctx; i++) {
-		free(app->tctx_id[i]);
-		free(app->tctx_text[i]);
-	}
-	free(app->tctx_id);
-	free(app->tctx_text);
 	for (int i = 0; i < app->input.nhistory; i++)
 		free(app->input.history[i]);
+}
+
+Server *app_add_server(App *app, const char *name, const Rc *rc)
+{
+	Server *srv = xcalloc(1, sizeof(*srv));
+	srv->app = app;
+	srv->name = xstrdup(name);
+	srv->rc = *rc;
+	srv->tctx_budget = -1;
+	app->servers = xrealloc(app->servers, (app->nservers + 1) * sizeof(*app->servers));
+	app->servers[app->nservers++] = srv;
+	if (!app->status_srv)
+		app->status_srv = srv;
+	return srv;
 }
 
 void app_start(App *app)
 {
 	Buf b;
 	buf_init(&b);
-	base_url(&app->rc.url, &b);
+	for (size_t i = 0; i < app->nservers; i++) {
+		Server *srv = app->servers[i];
+		if (i)
+			buf_puts(&b, ", ");
+		base_url(&srv->rc.url, &b);
+	}
 	free(app->wins[0]->topic);
-	app->wins[0]->topic = xstrdup(b.data);
-	app_info(app, NULL, "Logged in to %s as %s", b.data, app->rc.username);
+	app->wins[0]->topic = xstrdup(b.data ? b.data : "");
 	buf_free(&b);
-	app_info(app, NULL, "Type /help for a list of commands, Alt+1..9 or Ctrl+N/P to switch windows");
-	if (load_subscriptions(app, 1) == 0) {
-		load_topics(app);
-		app_info(app, NULL, "%zu rooms, %zu windows open", app->nsubs, app->nwins - 1);
+	app_info(app, NULL, "Type /help for a list of commands, Ctrl+G or Ctrl+N/P to switch windows");
+	for (size_t i = 0; i < app->nservers; i++) {
+		Server *srv = app->servers[i];
+		buf_init(&b);
+		base_url(&srv->rc.url, &b);
+		srv_msg(srv, LINE_INFO, "Logged in to %s as %s", b.data, srv->rc.username);
+		buf_free(&b);
+		size_t before = app->nwins;
+		if (load_subscriptions(app, srv, 1) == 0) {
+			load_topics(app, srv);
+			srv_msg(srv, LINE_INFO, "%zu rooms, %zu windows open", srv->nsubs, app->nwins - before);
+		}
 	}
 	app_ddp_tick(app);
 }
@@ -991,7 +1052,7 @@ static int send_text(App *app, Window *w, const char *text)
 	}
 	buf_puts(&body, "}}");
 	Err e;
-	Json *j = rc_post(&app->rc, "/api/v1/chat.sendMessage", body.data, e.err, sizeof(e.err));
+	Json *j = rc_post(&w->srv->rc, "/api/v1/chat.sendMessage", body.data, e.err, sizeof(e.err));
 	buf_free(&body);
 	if (!j) {
 		app_error(app, w, "Message not sent: %s", e.err);
@@ -1025,7 +1086,7 @@ static void post_room_action(App *app, Window *w, const char *action, const char
 	}
 	buf_puts(&body, "}");
 	Err e;
-	Json *j = rc_post(&app->rc, path, body.data, e.err, sizeof(e.err));
+	Json *j = rc_post(&w->srv->rc, path, body.data, e.err, sizeof(e.err));
 	buf_free(&body);
 	if (!j) {
 		app_error(app, w, "%s", e.err);
@@ -1036,22 +1097,22 @@ static void post_room_action(App *app, Window *w, const char *action, const char
 		win_remove(app, w);
 }
 
-static Window *query_window(App *app, const char *user)
+static Window *query_window(App *app, Server *srv, const char *user)
 {
 	const char *bare = user[0] == '@' ? user + 1 : user;
-	Window *w = win_by_name(app, bare);
+	Window *w = win_by_name(app, srv, bare);
 	if (w && w->type == 'd')
 		return w;
-	Subscription *s = sub_by_name(app, bare, 1);
+	Subscription *s = sub_by_name(srv, bare, 1);
 	if (s)
-		return open_window(app, s->rid, s->name, 'd');
+		return open_window(app, srv, s->rid, s->name, 'd');
 	Buf body;
 	buf_init(&body);
 	buf_puts(&body, "{\"username\":");
 	buf_json_str(&body, bare);
 	buf_puts(&body, "}");
 	Err e;
-	Json *j = rc_post(&app->rc, "/api/v1/im.create", body.data, e.err, sizeof(e.err));
+	Json *j = rc_post(&srv->rc, "/api/v1/im.create", body.data, e.err, sizeof(e.err));
 	buf_free(&body);
 	if (!j) {
 		app_error(app, NULL, "Could not open conversation with %s: %s", bare, e.err);
@@ -1060,27 +1121,28 @@ static Window *query_window(App *app, const char *user)
 	const char *rid = json_str(json_path(j, "room._id"));
 	if (!rid)
 		rid = json_str(json_path(j, "room.rid"));
-	w = rid ? open_window(app, rid, bare, 'd') : NULL;
+	w = rid ? open_window(app, srv, rid, bare, 'd') : NULL;
 	json_free(j);
 	if (w)
-		load_subscriptions(app, 0);
+		load_subscriptions(app, srv, 0);
 	return w;
 }
 
 static void cmd_join(App *app, const char *arg)
 {
+	Server *srv = cur_srv(app);
 	if (!*arg) {
 		app_error(app, current(app), "Usage: /join #channel");
 		return;
 	}
-	Window *w = win_by_name(app, arg);
+	Window *w = win_by_name(app, srv, arg);
 	if (w && w->type != 'd') {
 		app_switch(app, win_index(app, w));
 		return;
 	}
-	Subscription *s = sub_by_name(app, arg, 0);
+	Subscription *s = sub_by_name(srv, arg, 0);
 	if (s) {
-		w = open_window(app, s->rid, s->name, s->type);
+		w = open_window(app, srv, s->rid, s->name, s->type);
 		app_switch(app, win_index(app, w));
 		return;
 	}
@@ -1090,7 +1152,7 @@ static void cmd_join(App *app, const char *arg)
 	buf_puts(&path, "/api/v1/channels.info?roomName=");
 	url_encode(&path, bare);
 	Err e;
-	Json *info = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	Json *info = rc_get(&srv->rc, path.data, e.err, sizeof(e.err));
 	buf_free(&path);
 	if (!info) {
 		app_error(app, current(app), "Cannot join %s: %s", arg, e.err);
@@ -1109,7 +1171,7 @@ static void cmd_join(App *app, const char *arg)
 	buf_puts(&body, "{\"roomId\":");
 	buf_json_str(&body, rid);
 	buf_puts(&body, "}");
-	Json *j = rc_post(&app->rc, "/api/v1/channels.join", body.data, e.err, sizeof(e.err));
+	Json *j = rc_post(&srv->rc, "/api/v1/channels.join", body.data, e.err, sizeof(e.err));
 	buf_free(&body);
 	if (!j) {
 		app_error(app, current(app), "Cannot join %s: %s", arg, e.err);
@@ -1117,21 +1179,21 @@ static void cmd_join(App *app, const char *arg)
 		return;
 	}
 	json_free(j);
-	w = open_window(app, rid, name ? name : bare, 'c');
+	w = open_window(app, srv, rid, name ? name : bare, 'c');
 	if (topic) {
 		free(w->topic);
 		w->topic = ui_sanitize(topic);
 	}
 	json_free(info);
 	app_switch(app, win_index(app, w));
-	load_subscriptions(app, 0);
+	load_subscriptions(app, srv, 0);
 }
 
 static Window *target_window(App *app, const char *arg)
 {
 	if (!*arg)
 		return current(app);
-	Window *w = win_by_name(app, arg);
+	Window *w = win_by_name(app, cur_srv(app), arg);
 	if (!w)
 		app_error(app, current(app), "No window named %s", arg);
 	return w;
@@ -1164,7 +1226,7 @@ static void cmd_query(App *app, const char *arg)
 	user[n] = '\0';
 	if (arg[n])
 		rest = arg + n + 1;
-	Window *w = query_window(app, user);
+	Window *w = query_window(app, cur_srv(app), user);
 	if (!w)
 		return;
 	app_switch(app, win_index(app, w));
@@ -1182,7 +1244,8 @@ static void cmd_msg(App *app, const char *arg)
 	}
 	memcpy(target, arg, n);
 	target[n] = '\0';
-	Window *w = target[0] == '#' ? win_by_name(app, target) : query_window(app, target);
+	Server *srv = cur_srv(app);
+	Window *w = target[0] == '#' ? win_by_name(app, srv, target) : query_window(app, srv, target);
 	if (!w) {
 		app_error(app, current(app), "No window for %s, use /join first", target);
 		return;
@@ -1205,7 +1268,7 @@ static void cmd_me(App *app, const char *arg)
 	buf_json_str(&body, arg);
 	buf_puts(&body, "}");
 	Err e;
-	Json *j = rc_post(&app->rc, "/api/v1/commands.run", body.data, e.err, sizeof(e.err));
+	Json *j = rc_post(&w->srv->rc, "/api/v1/commands.run", body.data, e.err, sizeof(e.err));
 	buf_free(&body);
 	if (!j)
 		app_error(app, w, "%s", e.err);
@@ -1219,11 +1282,15 @@ static void cmd_window(App *app, const char *arg)
 	} else if (strcmp(arg, "prev") == 0 || strcmp(arg, "p") == 0) {
 		app_switch(app, (app->cur + app->nwins - 1) % app->nwins);
 	} else if (!*arg || strcmp(arg, "list") == 0) {
-		for (size_t i = 0; i < app->nwins; i++)
-			if (app->wins[i]->label)
-				app_info(app, current(app), "%3zu %s (%s)", i + 1, app->wins[i]->label, app->wins[i]->name);
+		for (size_t i = 0; i < app->nwins; i++) {
+			Window *w = app->wins[i];
+			const char *tag = app->nservers > 1 && w->srv ? w->srv->name : "";
+			const char *sep = *tag ? "/" : "";
+			if (w->label)
+				app_info(app, current(app), "%3zu %s%s%s (%s)", i + 1, tag, sep, w->label, w->name);
 			else
-				app_info(app, current(app), "%3zu %s", i + 1, app->wins[i]->name);
+				app_info(app, current(app), "%3zu %s%s%s", i + 1, tag, sep, w->name);
+		}
 	} else if (isdigit((unsigned char)arg[0])) {
 		long n = strtol(arg, NULL, 10);
 		if (n < 1 || (size_t)n > app->nwins)
@@ -1240,7 +1307,7 @@ static void cmd_window(App *app, const char *arg)
 static void cmd_list(App *app, const char *arg)
 {
 	Err e;
-	Json *j = rc_get(&app->rc, "/api/v1/channels.list?count=500&sort=%7B%22name%22%3A1%7D", e.err, sizeof(e.err));
+	Json *j = rc_get(&cur_srv(app)->rc, "/api/v1/channels.list?count=500&sort=%7B%22name%22%3A1%7D", e.err, sizeof(e.err));
 	if (!j) {
 		app_error(app, current(app), "%s", e.err);
 		return;
@@ -1274,7 +1341,7 @@ static void cmd_names(App *app)
 	buf_printf(&path, "/api/v1/%s.members?count=500&roomId=", ep);
 	url_encode(&path, w->rid);
 	Err e;
-	Json *j = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	Json *j = rc_get(&w->srv->rc, path.data, e.err, sizeof(e.err));
 	buf_free(&path);
 	if (!j) {
 		app_error(app, w, "%s", e.err);
@@ -1338,6 +1405,40 @@ static void cmd_theme(App *app, const char *arg)
 	buf_free(&b);
 }
 
+static const char *state_name(DdpState st)
+{
+	switch (st) {
+	case DDP_READY: return "connected";
+	case DDP_CONNECTING: return "connecting";
+	case DDP_LOGGING_IN: return "logging in";
+	default: return "offline";
+	}
+}
+
+static void cmd_server(App *app, const char *arg)
+{
+	if (!*arg) {
+		for (size_t i = 0; i < app->nservers; i++) {
+			Server *srv = app->servers[i];
+			Buf b;
+			buf_init(&b);
+			base_url(&srv->rc.url, &b);
+			app_info(app, current(app), "%s %-12s %s as %s, %s", srv == app->status_srv ? "*" : " ", srv->name, b.data,
+				 srv->rc.username ? srv->rc.username : "?", state_name(srv->rc.state));
+			buf_free(&b);
+		}
+		return;
+	}
+	for (size_t i = 0; i < app->nservers; i++) {
+		if (str_casecmp(app->servers[i]->name, arg) == 0) {
+			app->status_srv = app->servers[i];
+			app_info(app, current(app), "Commands in the status window now go to %s", app->status_srv->name);
+			return;
+		}
+	}
+	app_error(app, current(app), "No server named %s, /server lists them", arg);
+}
+
 static void cmd_help(App *app)
 {
 	static const char *help[] = {
@@ -1354,6 +1455,7 @@ static void cmd_help(App *app)
 		"/clear                  clear the current window",
 		"/theme [name]           list themes or switch to one",
 		"/reconnect              reconnect the realtime connection",
+		"/server [name]          list servers, or pick the one for the status window",
 		"/quit                   exit",
 		"Keys: Ctrl+G go to a window by number or name, Ctrl+X jump to activity,",
 		"      Ctrl+R select a message to reply in its thread (r) or react to it (+),",
@@ -1402,11 +1504,14 @@ static void run_command(App *app, const char *line)
 	else if (strcmp(cmd, "clear") == 0)
 		cmd_clear(app);
 	else if (strcmp(cmd, "reconnect") == 0) {
-		rc_ddp_disconnect(&app->rc);
-		app->reconnect_delay = 0;
-		app->reconnect_at = 0;
+		Server *srv = cur_srv(app);
+		rc_ddp_disconnect(&srv->rc);
+		srv->reconnect_delay = 0;
+		srv->reconnect_at = 0;
 		app_ddp_tick(app);
-	} else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
+	} else if (strcmp(cmd, "server") == 0)
+		cmd_server(app, arg);
+	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
 	else if (strcmp(cmd, "help") == 0)
 		cmd_help(app);
@@ -1566,13 +1671,20 @@ void app_goto_update(App *app)
 		}
 		return;
 	}
+	const char *slash = app->nservers > 1 ? strchr(q, '/') : NULL;
+	size_t taglen = slash ? (size_t)(slash - q) : 0;
+	if (slash)
+		q = slash + 1;
 	int *scores = xcalloc(app->nwins, sizeof(*scores));
 	for (size_t i = 0; i < app->nwins; i++) {
 		const char *name = app->wins[i]->name;
 		const char *label = app->wins[i]->label;
 		const char *bare = name[0] == '#' ? name + 1 : name;
+		Server *srv = app->wins[i]->srv;
+		if (slash && (!srv || strncasecmp_ascii(srv->name, app->goto_text, taglen) != 0))
+			continue;
 		int score;
-		if (strncasecmp_ascii(bare, q, strlen(q)) == 0 || word_prefix(label, q))
+		if (!*q || strncasecmp_ascii(bare, q, strlen(q)) == 0 || word_prefix(label, q))
 			score = 20;
 		else if (str_icontains(name, q) || (label && str_icontains(label, q)))
 			score = 10;
@@ -1773,7 +1885,7 @@ void app_react_send(App *app)
 		buf_json_str(&body, emoji.data);
 		buf_puts(&body, "}");
 		Err e;
-		Json *j = rc_post(&app->rc, "/api/v1/chat.react", body.data, e.err, sizeof(e.err));
+		Json *j = rc_post(&cur_srv(app)->rc, "/api/v1/chat.react", body.data, e.err, sizeof(e.err));
 		buf_free(&body);
 		if (!j)
 			app_error(app, current(app), "Could not react with %s: %s", emoji.data, e.err);

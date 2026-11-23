@@ -1,4 +1,5 @@
 #include "app.h"
+#include "config.h"
 #include "net.h"
 #include "rc.h"
 #include "ui.h"
@@ -16,16 +17,6 @@
 #include <termios.h>
 #include <unistd.h>
 
-typedef struct {
-	char *server;
-	char *user_id;
-	char *token;
-	char *username;
-	int insecure;
-	int show_usernames;
-	char *theme;
-} Config;
-
 static volatile sig_atomic_t got_term;
 
 static void on_term(int sig)
@@ -36,8 +27,9 @@ static void on_term(int sig)
 
 static void usage(FILE *f)
 {
-	fputs("usage: asciirc [-s server] [-i user_id] [-t token] [-u username] [-c config] [-k]\n"
+	fputs("usage: asciirc [-S name] [-s server] [-i user_id] [-t token] [-u username] [-c config] [-k]\n"
 	      "\n"
+	      "  -S name      connect only to the server [name] of the config file\n"
 	      "  -s server    server URL, e.g. https://chat.example.com\n"
 	      "  -i user_id   user id belonging to a personal access token\n"
 	      "  -t token     personal access token (prefer ASCIIRC_TOKEN or the config file)\n"
@@ -47,73 +39,9 @@ static void usage(FILE *f)
 	      "\n"
 	      "Environment: ASCIIRC_SERVER, ASCIIRC_USER_ID, ASCIIRC_TOKEN, ASCIIRC_USERNAME\n"
 	      "Config file lines: server = ..., user_id = ..., token = ..., username = ...,\n"
-	      "                   insecure = 1, nicks = name|username, theme = name\n",
+	      "                   insecure = 1, nicks = name|username, theme = name\n"
+	      "Several servers: put each one's lines below a [name] line.\n",
 	      f);
-}
-
-static void set_str(char **dst, const char *v)
-{
-	free(*dst);
-	*dst = v ? xstrdup(v) : NULL;
-}
-
-static char *trim(char *s)
-{
-	while (*s == ' ' || *s == '\t')
-		s++;
-	size_t n = strlen(s);
-	while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\n' || s[n - 1] == '\r'))
-		s[--n] = '\0';
-	return s;
-}
-
-static int load_config(const char *path, int required, Config *cfg)
-{
-	FILE *f = fopen(path, "r");
-	if (!f) {
-		if (required) {
-			fprintf(stderr, "asciirc: %s: %s\n", path, strerror(errno));
-			return -1;
-		}
-		return 0;
-	}
-	struct stat st;
-	if (fstat(fileno(f), &st) == 0 && (st.st_mode & 077))
-		fprintf(stderr, "asciirc: warning: %s is readable by other users, run chmod 600 on it\n", path);
-	char line[1024];
-	int lineno = 0;
-	while (fgets(line, sizeof(line), f)) {
-		lineno++;
-		char *s = trim(line);
-		if (!*s || *s == '#')
-			continue;
-		char *eq = strchr(s, '=');
-		if (!eq) {
-			fprintf(stderr, "asciirc: %s:%d: expected key = value\n", path, lineno);
-			continue;
-		}
-		*eq = '\0';
-		char *key = trim(s);
-		char *val = trim(eq + 1);
-		if (strcmp(key, "server") == 0)
-			set_str(&cfg->server, val);
-		else if (strcmp(key, "user_id") == 0)
-			set_str(&cfg->user_id, val);
-		else if (strcmp(key, "token") == 0)
-			set_str(&cfg->token, val);
-		else if (strcmp(key, "username") == 0)
-			set_str(&cfg->username, val);
-		else if (strcmp(key, "theme") == 0)
-			set_str(&cfg->theme, val);
-		else if (strcmp(key, "nicks") == 0)
-			cfg->show_usernames = strcmp(val, "username") == 0;
-		else if (strcmp(key, "insecure") == 0)
-			cfg->insecure = strcmp(val, "1") == 0 || strcmp(val, "true") == 0 || strcmp(val, "yes") == 0;
-		else
-			fprintf(stderr, "asciirc: %s:%d: unknown key '%s'\n", path, lineno, key);
-	}
-	fclose(f);
-	return 0;
 }
 
 static char *default_config_path(void)
@@ -339,30 +267,35 @@ static void handle_key(App *app, const Key *k)
 
 static int run(App *app)
 {
+	struct pollfd *fds = xcalloc(app->nservers + 1, sizeof(*fds));
+	Server **owner = xcalloc(app->nservers + 1, sizeof(*owner));
+	int ret = 0;
 	ui_draw(app);
 	while (!app->quit && !got_term) {
-		struct pollfd fds[2];
-		int nfds = 0;
+		nfds_t nfds = 0;
 		fds[nfds].fd = STDIN_FILENO;
 		fds[nfds].events = POLLIN;
 		nfds++;
-		int wsfd = rc_ddp_fd(&app->rc);
-		if (wsfd >= 0) {
-			fds[nfds].fd = wsfd;
+		for (size_t i = 0; i < app->nservers; i++) {
+			int fd = rc_ddp_fd(&app->servers[i]->rc);
+			if (fd < 0)
+				continue;
+			fds[nfds].fd = fd;
 			fds[nfds].events = POLLIN;
+			owner[nfds] = app->servers[i];
 			nfds++;
 		}
 
 		long long now = now_ms();
 		long long timeout = 60000 - now % 60000 + 10;
-		if (app->rc.state == DDP_OFFLINE && app->reconnect_at >= 0) {
-			long long until = app->reconnect_at - now;
-			if (until < timeout)
-				timeout = until < 0 ? 0 : until;
+		long long next = app_next_reconnect(app);
+		if (next >= 0 && next - now < timeout)
+			timeout = next - now < 0 ? 0 : next - now;
+		int r = poll(fds, nfds, (int)timeout);
+		if (r < 0 && errno != EINTR) {
+			ret = -1;
+			break;
 		}
-		int r = poll(fds, (nfds_t)nfds, (int)timeout);
-		if (r < 0 && errno != EINTR)
-			return -1;
 
 		if (ui_check_resize())
 			app->dirty = 1;
@@ -376,8 +309,9 @@ static int run(App *app)
 			for (size_t i = 0; i < nk && !app->quit; i++)
 				handle_key(app, &keys[i]);
 		}
-		if (r > 0 && nfds > 1 && fds[1].revents)
-			app_ddp_readable(app);
+		for (nfds_t i = 1; r > 0 && i < nfds; i++)
+			if (fds[i].revents)
+				app_ddp_readable(app, owner[i]);
 		app_ddp_tick(app);
 		if (r == 0)
 			app->dirty = 1;
@@ -386,7 +320,48 @@ static int run(App *app)
 			app->dirty = 0;
 		}
 	}
-	return 0;
+	free(fds);
+	free(owner);
+	return ret;
+}
+
+static int login(const ServerConfig *sc, int several, Rc *rc, char *err, size_t errlen)
+{
+	Url url;
+	if (url_parse(sc->server, &url) < 0) {
+		snprintf(err, errlen, "invalid server URL: %s", sc->server);
+		return -1;
+	}
+	url.insecure = sc->insecure;
+	rc_init(rc, &url);
+	if (sc->token) {
+		if (!sc->user_id) {
+			snprintf(err, errlen, "a personal access token also needs the user id (user_id, -i or ASCIIRC_USER_ID)");
+			return -1;
+		}
+		rc->user_id = xstrdup(sc->user_id);
+		rc->token = xstrdup(sc->token);
+	} else if (sc->username) {
+		char prompt[300];
+		if (several)
+			snprintf(prompt, sizeof(prompt), "Password for %s on %s: ", sc->username, sc->name);
+		else
+			snprintf(prompt, sizeof(prompt), "Password: ");
+		char *pw = read_password(prompt);
+		if (!pw) {
+			snprintf(err, errlen, "cannot read password");
+			return -1;
+		}
+		int r = rc_login_password(rc, sc->username, pw, err, errlen);
+		memset(pw, 0, strlen(pw));
+		free(pw);
+		if (r < 0)
+			return -1;
+	} else {
+		snprintf(err, errlen, "no credentials, give a user id and token or a username");
+		return -1;
+	}
+	return rc_fetch_me(rc, err, errlen);
 }
 
 int main(int argc, char **argv)
@@ -395,18 +370,23 @@ int main(int argc, char **argv)
 
 	Config cfg;
 	memset(&cfg, 0, sizeof(cfg));
-	const char *config_path = NULL;
-	const char *opt_server = NULL, *opt_uid = NULL, *opt_token = NULL, *opt_user = NULL;
-	int opt_insecure = 0;
-	int c;
-	while ((c = getopt(argc, argv, "s:i:t:u:c:kh")) != -1) {
+	ServerConfig ov;
+	memset(&ov, 0, sizeof(ov));
+	const char *config_path = NULL, *select = NULL;
+	ov.server = getenv("ASCIIRC_SERVER");
+	ov.user_id = getenv("ASCIIRC_USER_ID");
+	ov.token = getenv("ASCIIRC_TOKEN");
+	ov.username = getenv("ASCIIRC_USERNAME");
+	int c, opt_t = 0, opt_u = 0;
+	while ((c = getopt(argc, argv, "S:s:i:t:u:c:kh")) != -1) {
 		switch (c) {
-		case 's': opt_server = optarg; break;
-		case 'i': opt_uid = optarg; break;
-		case 't': opt_token = optarg; break;
-		case 'u': opt_user = optarg; break;
+		case 'S': select = optarg; break;
+		case 's': ov.server = optarg; break;
+		case 'i': ov.user_id = optarg; break;
+		case 't': ov.token = optarg; opt_t = 1; break;
+		case 'u': ov.username = optarg; opt_u = 1; break;
 		case 'c': config_path = optarg; break;
-		case 'k': opt_insecure = 1; break;
+		case 'k': ov.insecure = 1; break;
 		case 'h': usage(stdout); return 0;
 		default: usage(stderr); return 2;
 		}
@@ -415,52 +395,31 @@ int main(int argc, char **argv)
 		usage(stderr);
 		return 2;
 	}
+	if (opt_u && !opt_t)
+		ov.token = NULL;
 
 	if (config_path) {
-		if (load_config(config_path, 1, &cfg) < 0)
+		if (config_load(&cfg, config_path, 1) < 0)
 			return 1;
 	} else {
 		char *p = default_config_path();
 		if (p)
-			load_config(p, 0, &cfg);
+			config_load(&cfg, p, 0);
 		free(p);
 	}
-	if (getenv("ASCIIRC_SERVER"))
-		set_str(&cfg.server, getenv("ASCIIRC_SERVER"));
-	if (getenv("ASCIIRC_USER_ID"))
-		set_str(&cfg.user_id, getenv("ASCIIRC_USER_ID"));
-	if (getenv("ASCIIRC_TOKEN"))
-		set_str(&cfg.token, getenv("ASCIIRC_TOKEN"));
-	if (getenv("ASCIIRC_USERNAME"))
-		set_str(&cfg.username, getenv("ASCIIRC_USERNAME"));
-	if (opt_server)
-		set_str(&cfg.server, opt_server);
-	if (opt_uid)
-		set_str(&cfg.user_id, opt_uid);
-	if (opt_token)
-		set_str(&cfg.token, opt_token);
-	if (opt_user) {
-		set_str(&cfg.username, opt_user);
-		set_str(&cfg.token, NULL);
+	char err[512];
+	if (config_apply(&cfg, select, &ov, err, sizeof(err)) < 0) {
+		fprintf(stderr, "asciirc: %s\n\n", err);
+		usage(stderr);
+		config_free(&cfg);
+		return 2;
 	}
-	if (opt_insecure)
-		cfg.insecure = 1;
-
 	if (cfg.theme && ui_set_theme(cfg.theme) < 0) {
 		fprintf(stderr, "asciirc: unknown theme '%s', available:", cfg.theme);
 		for (size_t i = 0; ui_theme_at(i); i++)
 			fprintf(stderr, " %s", ui_theme_at(i));
 		fputc('\n', stderr);
-		return 2;
-	}
-	if (!cfg.server) {
-		fputs("asciirc: no server given\n\n", stderr);
-		usage(stderr);
-		return 2;
-	}
-	Url url;
-	if (url_parse(cfg.server, &url) < 0) {
-		fprintf(stderr, "asciirc: invalid server URL: %s\n", cfg.server);
+		config_free(&cfg);
 		return 2;
 	}
 
@@ -472,56 +431,42 @@ int main(int argc, char **argv)
 	sigaction(SIGTERM, &sa, NULL);
 	sigaction(SIGHUP, &sa, NULL);
 
-	net_init(cfg.insecure);
 	App app;
-	rc_init(&app.rc, &url);
-	char err[512];
-	if (cfg.token) {
-		if (!cfg.user_id) {
-			fputs("asciirc: a personal access token also needs the user id (-i or ASCIIRC_USER_ID)\n", stderr);
-			return 2;
-		}
-		app.rc.user_id = xstrdup(cfg.user_id);
-		app.rc.token = xstrdup(cfg.token);
-	} else if (cfg.username) {
-		char *pw = read_password("Password: ");
-		if (!pw) {
-			fputs("asciirc: cannot read password\n", stderr);
-			return 1;
-		}
-		int r = rc_login_password(&app.rc, cfg.username, pw, err, sizeof(err));
-		memset(pw, 0, strlen(pw));
-		free(pw);
-		if (r < 0) {
-			fprintf(stderr, "asciirc: login failed: %s\n", err);
-			return 1;
-		}
-	} else {
-		fputs("asciirc: no credentials, give a user id and token or a username\n\n", stderr);
-		usage(stderr);
-		return 2;
-	}
-	if (rc_fetch_me(&app.rc, err, sizeof(err)) < 0) {
-		fprintf(stderr, "asciirc: %s\n", err);
-		return 1;
-	}
-
-	if (ui_init() < 0) {
-		fputs("asciirc: stdin and stdout must be a terminal\n", stderr);
-		return 1;
-	}
-	atexit(ui_shutdown);
 	app_init(&app);
 	app.show_usernames = cfg.show_usernames;
-	app_start(&app);
-	int rc = run(&app);
-	ui_shutdown();
+	char **failed = xcalloc(cfg.nservers, sizeof(*failed));
+	size_t nfailed = 0;
+	for (size_t i = 0; i < cfg.nservers; i++) {
+		ServerConfig *sc = &cfg.servers[i];
+		Rc rc;
+		if (login(sc, cfg.nservers > 1, &rc, err, sizeof(err)) < 0) {
+			Buf b;
+			buf_init(&b);
+			buf_printf(&b, cfg.nservers > 1 ? "%s: %s" : "%.0s%s", sc->name, err);
+			failed[nfailed++] = buf_steal(&b);
+			rc_free(&rc);
+			continue;
+		}
+		app_add_server(&app, sc->name, &rc);
+	}
+	int rc = 1;
+	if (app.nservers == 0) {
+		for (size_t i = 0; i < nfailed; i++)
+			fprintf(stderr, "asciirc: %s\n", failed[i]);
+	} else if (ui_init() < 0) {
+		fputs("asciirc: stdin and stdout must be a terminal\n", stderr);
+	} else {
+		atexit(ui_shutdown);
+		for (size_t i = 0; i < nfailed; i++)
+			app_error(&app, NULL, "Login failed for %s", failed[i]);
+		app_start(&app);
+		rc = run(&app) < 0 ? 1 : 0;
+		ui_shutdown();
+	}
+	for (size_t i = 0; i < nfailed; i++)
+		free(failed[i]);
+	free(failed);
 	app_free(&app);
-	rc_free(&app.rc);
-	free(cfg.server);
-	free(cfg.user_id);
-	free(cfg.token);
-	free(cfg.username);
-	free(cfg.theme);
-	return rc < 0 ? 1 : 0;
+	config_free(&cfg);
+	return rc;
 }

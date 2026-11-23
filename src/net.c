@@ -21,7 +21,6 @@ struct Conn {
 };
 
 static SSL_CTX *ssl_ctx;
-static int ssl_insecure;
 
 int url_parse(const char *s, Url *u)
 {
@@ -62,11 +61,6 @@ int url_parse(const char *s, Url *u)
 	return 0;
 }
 
-void net_init(int insecure)
-{
-	ssl_insecure = insecure;
-}
-
 static int ensure_ctx(void)
 {
 	if (ssl_ctx)
@@ -75,10 +69,8 @@ static int ensure_ctx(void)
 	if (!ssl_ctx)
 		return -1;
 	SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_2_VERSION);
-	if (!ssl_insecure) {
-		SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
-		SSL_CTX_set_default_verify_paths(ssl_ctx);
-	}
+	SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
+	SSL_CTX_set_default_verify_paths(ssl_ctx);
 	return 0;
 }
 
@@ -143,12 +135,14 @@ Conn *net_connect(const Url *u, char *err, size_t errlen)
 	c->ssl = SSL_new(ssl_ctx);
 	SSL_set_fd(c->ssl, fd);
 	SSL_set_tlsext_host_name(c->ssl, u->host);
-	if (!ssl_insecure)
+	if (u->insecure)
+		SSL_set_verify(c->ssl, SSL_VERIFY_NONE, NULL);
+	else
 		X509_VERIFY_PARAM_set1_host(SSL_get0_param(c->ssl), u->host, 0);
 	if (SSL_connect(c->ssl) != 1) {
 		long vr = SSL_get_verify_result(c->ssl);
 		if (vr != X509_V_OK) {
-			snprintf(err, errlen, "TLS certificate verification failed: %s (use -k to skip)",
+			snprintf(err, errlen, "TLS certificate verification failed: %s (insecure = 1 or -k skips the check)",
 				 X509_verify_cert_error_string(vr));
 			ERR_clear_error();
 		} else {

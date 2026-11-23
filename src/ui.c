@@ -732,7 +732,8 @@ static void draw_status(App *app, Buf *out, int row)
 	buf_puts(&s, tmp);
 	sw += (int)strlen(tmp);
 
-	const char *nick = app->rc.username ? app->rc.username : "?";
+	Server *srv = win_server(app, w);
+	const char *nick = srv && srv->rc.username ? srv->rc.username : "?";
 	buf_puts(&s, "[");
 	sw += 1 + put_trunc(&s, nick, 20);
 	buf_puts(&s, "] ");
@@ -741,14 +742,26 @@ static void draw_status(App *app, Buf *out, int row)
 	snprintf(tmp, sizeof(tmp), "[%zu:", app->cur + 1);
 	buf_puts(&s, tmp);
 	sw += (int)strlen(tmp);
+	if (app->nservers > 1 && w->srv) {
+		sw += put_trunc(&s, w->srv->name, 12) + 1;
+		buf_putc(&s, '/');
+	}
 	sw += put_trunc(&s, win_label(w), 30);
 	buf_puts(&s, "] ");
 	sw += 2;
 
-	const char *st = state_label(app->rc.state);
-	if (st) {
+	for (size_t i = 0; i < app->nservers; i++) {
+		Server *o = app->servers[i];
+		const char *st = state_label(o->rc.state);
+		if (!st || (o != srv && o->rc.state != DDP_OFFLINE))
+			continue;
 		style(&s, theme->bar_warn);
-		buf_printf(&s, "[%s]", st);
+		buf_putc(&s, '[');
+		if (app->nservers > 1) {
+			sw += put_trunc(&s, o->name, 12) + 2;
+			buf_puts(&s, ": ");
+		}
+		buf_printf(&s, "%s]", st);
 		style(&s, theme->bar);
 		buf_putc(&s, ' ');
 		sw += (int)strlen(st) + 3;
@@ -778,7 +791,12 @@ static void draw_status(App *app, Buf *out, int row)
 		style(&hint, theme->bar_act);
 		buf_puts(&hint, tmp);
 		hw = (int)strlen(tmp) + 1;
-		hw += put_trunc(&hint, win_label(app->wins[app->goto_match]), cols / 2);
+		Window *m = app->wins[app->goto_match];
+		if (app->nservers > 1 && m->srv) {
+			hw += put_trunc(&hint, m->srv->name, 12) + 1;
+			buf_putc(&hint, '/');
+		}
+		hw += put_trunc(&hint, win_label(m), cols / 2);
 		buf_putc(&hint, ']');
 		style(&hint, theme->bar);
 	}
@@ -881,7 +899,12 @@ static int draw_goto(App *app, Buf *out, int row)
 {
 	char hint[96];
 	if (app->goto_match >= 0)
-		snprintf(hint, sizeof(hint), "-> %ld:%s", app->goto_match + 1, win_label(app->wins[app->goto_match]));
+	{
+		Window *m = app->wins[app->goto_match];
+		int tagged = app->nservers > 1 && m->srv;
+		snprintf(hint, sizeof(hint), "-> %ld:%s%s%s", app->goto_match + 1, tagged ? m->srv->name : "", tagged ? "/" : "",
+			 win_label(m));
+	}
 	else if (app->goto_text[0])
 		snprintf(hint, sizeof(hint), "no match");
 	else
@@ -961,7 +984,12 @@ void ui_draw(App *app)
 	Buf top;
 	buf_init(&top);
 	buf_putc(&top, ' ');
-	int tw = 1 + put_trunc(&top, w->topic && *w->topic ? w->topic : win_label(w), cols - 1);
+	int tw = 1;
+	if (app->nservers > 1 && w->srv) {
+		tw += put_trunc(&top, w->srv->name, 12) + 2;
+		buf_puts(&top, ": ");
+	}
+	tw += put_trunc(&top, w->topic && *w->topic ? w->topic : win_label(w), cols - tw);
 	draw_bar(&out, 1, top.data, tw);
 	buf_free(&top);
 
