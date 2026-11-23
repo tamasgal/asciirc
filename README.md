@@ -2,9 +2,17 @@
 
 A terminal Rocket.Chat client in the style of irssi.
 
+## Install
+
+On macOS with Homebrew:
+
+```
+brew install tamasgal/tap/asciirc
+```
+
 ## Build
 
-Needs a C99 compiler and OpenSSL.
+To build from source you need a C99 compiler and OpenSSL.
 
 ```
 make
