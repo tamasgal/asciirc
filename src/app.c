@@ -24,6 +24,7 @@ static void line_free(Line *ln)
 	free(ln->text);
 	free(ln->msgid);
 	free(ln->raw);
+	free(ln->tmid);
 }
 
 static Window *win_new(App *app, const char *rid, const char *name, char type)
@@ -84,11 +85,23 @@ static Window *current(App *app)
 
 static void load_history(App *app, Window *w);
 
+static void reset_modes(App *app)
+{
+	free(app->sel_id);
+	app->sel_id = NULL;
+	free(app->reply_tmid);
+	app->reply_tmid = NULL;
+	free(app->reply_to);
+	app->reply_to = NULL;
+	app->react_active = 0;
+}
+
 static void win_remove(App *app, Window *w)
 {
 	size_t idx = win_index(app, w);
 	if (idx == 0)
 		return;
+	reset_modes(app);
 	win_free(w);
 	memmove(app->wins + idx, app->wins + idx + 1, (app->nwins - idx - 1) * sizeof(*app->wins));
 	app->nwins--;
@@ -259,7 +272,126 @@ static void describe_attachments(App *app, Buf *b, const Json *m)
 	}
 }
 
-static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
+static int is_me(App *app, const char *user)
+{
+	return user && app->rc.username && strcmp(user, app->rc.username) == 0;
+}
+
+static void put_snippet(Buf *b, const char *s, size_t max)
+{
+	size_t n = 0;
+	while (s[n] && n < max)
+		n++;
+	while (n > 0 && s[n] && ((unsigned char)s[n] & 0xc0) == 0x80)
+		n--;
+	for (size_t i = 0; i < n; i++)
+		buf_putc(b, s[i] == '\n' || s[i] == '\r' || s[i] == '\t' ? ' ' : s[i]);
+	if (s[n])
+		buf_puts(b, "...");
+}
+
+static void put_context(App *app, Buf *b, const Json *m)
+{
+	const char *user = json_str(json_path(m, "u.username"));
+	const char *name = json_str(json_path(m, "u.name"));
+	const char *msg = json_get_str(m, "msg");
+	buf_puts(b, !app->show_usernames && name && *name ? name : user ? user : "?");
+	if (msg && *msg) {
+		buf_puts(b, ": ");
+		put_snippet(b, msg, 40);
+	}
+}
+
+static const Json *find_msg(const Json *arr, const char *id)
+{
+	for (size_t i = 0; i < json_len(arr); i++) {
+		const char *mid = json_get_str(json_at(arr, i), "_id");
+		if (mid && strcmp(mid, id) == 0)
+			return json_at(arr, i);
+	}
+	return NULL;
+}
+
+static char *thread_context(App *app, Window *w, const char *tmid, const Json *scope)
+{
+	Buf b;
+	buf_init(&b);
+	Line *p = find_line(w, tmid);
+	const Json *pm = find_msg(scope, tmid);
+	if (p) {
+		buf_puts(&b, p->name ? p->name : p->nick);
+		if (p->raw && *p->raw) {
+			buf_puts(&b, ": ");
+			put_snippet(&b, p->raw, 40);
+		}
+		return buf_steal(&b);
+	}
+	if (pm) {
+		put_context(app, &b, pm);
+		return buf_steal(&b);
+	}
+	for (size_t i = 0; i < app->ntctx; i++)
+		if (strcmp(app->tctx_id[i], tmid) == 0)
+			return app->tctx_text[i] ? xstrdup(app->tctx_text[i]) : NULL;
+	if (app->tctx_budget == 0)
+		return NULL;
+	if (app->tctx_budget > 0)
+		app->tctx_budget--;
+	Buf path;
+	buf_init(&path);
+	buf_puts(&path, "/api/v1/chat.getMessage?msgId=");
+	url_encode(&path, tmid);
+	Err e;
+	Json *j = rc_get(&app->rc, path.data, e.err, sizeof(e.err));
+	buf_free(&path);
+	const Json *jm = json_get(j, "message");
+	char *text = NULL;
+	if (jm) {
+		put_context(app, &b, jm);
+		text = buf_steal(&b);
+	}
+	json_free(j);
+	app->tctx_id = xrealloc(app->tctx_id, (app->ntctx + 1) * sizeof(*app->tctx_id));
+	app->tctx_text = xrealloc(app->tctx_text, (app->ntctx + 1) * sizeof(*app->tctx_text));
+	app->tctx_id[app->ntctx] = xstrdup(tmid);
+	app->tctx_text[app->ntctx] = text;
+	app->ntctx++;
+	buf_free(&b);
+	return text ? xstrdup(text) : NULL;
+}
+
+static void describe_meta(App *app, Buf *b, const Json *m)
+{
+	const Json *r = json_get(m, "reactions");
+	for (size_t i = 0; r && r->type == JSON_OBJECT && i < r->len; i++) {
+		const Json *users = json_get(r->items[i], "usernames");
+		const Json *names = app->show_usernames ? NULL : json_get(r->items[i], "names");
+		size_t n = json_len(users);
+		if (n == 0)
+			continue;
+		if (b->len)
+			buf_puts(b, "  ");
+		buf_puts(b, r->keys[i]);
+		buf_putc(b, ' ');
+		for (size_t k = 0; k < n && k < 3; k++) {
+			const char *u = json_str(json_at(users, k));
+			const char *nm = json_str(json_at(names, k));
+			if (k)
+				buf_puts(b, ", ");
+			buf_puts(b, is_me(app, u) ? "you" : nm && *nm ? nm : u ? u : "?");
+		}
+		if (n > 3)
+			buf_printf(b, " +%zu", n - 3);
+	}
+	int tc = (int)json_num(json_get(m, "tcount"), 0);
+	if (tc > 0) {
+		if (b->len)
+			buf_puts(b, "  ");
+		buf_printf(b, tc == 1 ? "%d reply" : "%d replies", tc);
+	}
+}
+
+static int msg_to_line(App *app, const Json *m, Window *w, Line *ln, const Json *scope)
 {
 	memset(ln, 0, sizeof(*ln));
 	const char *id = json_get_str(m, "_id");
@@ -288,8 +420,6 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 		describe_event(&text, t, name ? name : user, msg);
 	} else {
 		ln->kind = LINE_MSG;
-		if (json_get(m, "tmid"))
-			buf_puts(&text, "[thread] ");
 		if (t)
 			buf_puts(&text, "[encrypted message]");
 		else
@@ -310,11 +440,47 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 
 	ln->nick = ui_sanitize(user);
 	ln->name = name ? ui_sanitize(name) : NULL;
-	ln->text = ui_sanitize(text.data ? text.data : "");
+	const char *tmid = json_get_str(m, "tmid");
+	if (tmid)
+		ln->tmid = xstrdup(tmid);
+	Buf full;
+	buf_init(&full);
+	if (tmid && ln->kind == LINE_MSG) {
+		char *ctx = thread_context(app, w, tmid, scope);
+		Buf c;
+		buf_init(&c);
+		buf_puts(&c, ctx ? "[re " : "[thread");
+		if (ctx)
+			buf_puts(&c, ctx);
+		buf_puts(&c, "] ");
+		free(ctx);
+		char *cs = ui_sanitize(c.data);
+		buf_puts(&full, cs);
+		ln->ctx_len = full.len;
+		free(cs);
+		buf_free(&c);
+	}
+	char *body = ui_sanitize(text.data ? text.data : "");
+	buf_puts(&full, body);
+	free(body);
 	buf_free(&text);
+	if (ln->kind == LINE_MSG) {
+		Buf meta;
+		buf_init(&meta);
+		describe_meta(app, &meta, m);
+		if (meta.len) {
+			char *ms = ui_sanitize(meta.data);
+			buf_putc(&full, '\n');
+			buf_puts(&full, ms);
+			ln->meta_len = strlen(ms);
+			free(ms);
+		}
+		buf_free(&meta);
+	}
+	ln->text = buf_steal(&full);
 	ln->msgid = id ? xstrdup(id) : NULL;
 	ln->raw = xstrdup(msg);
-	ln->own = app->rc.username && strcmp(user, app->rc.username) == 0;
+	ln->own = is_me(app, user);
 	if (!ln->own && ln->kind == LINE_MSG)
 		ln->highlight = w->type == 'd' || mentions_me(m, app->rc.username);
 	return 0;
@@ -323,12 +489,12 @@ static int msg_to_line(App *app, const Json *m, const Window *w, Line *ln)
 static void add_message(App *app, Window *w, const Json *m, int notify)
 {
 	Line ln;
-	if (msg_to_line(app, m, w, &ln) < 0)
+	if (msg_to_line(app, m, w, &ln, NULL) < 0)
 		return;
 	if (ln.msgid) {
 		Line *old = find_line(w, ln.msgid);
 		if (old) {
-			if (strcmp(old->raw, ln.raw) != 0 || ln.kind != old->kind) {
+			if (strcmp(old->text, ln.text) != 0 || ln.kind != old->kind) {
 				char *tmp = old->text;
 				old->text = ln.text;
 				ln.text = tmp;
@@ -336,6 +502,8 @@ static void add_message(App *app, Window *w, const Json *m, int notify)
 				old->raw = ln.raw;
 				ln.raw = tmp;
 				old->kind = ln.kind;
+				old->ctx_len = ln.ctx_len;
+				old->meta_len = ln.meta_len;
 				app->dirty = 1;
 			}
 			line_free(&ln);
@@ -377,16 +545,26 @@ static void load_history(App *app, Window *w)
 	size_t n = json_len(msgs);
 	Line *hist = xcalloc(n ? n : 1, sizeof(*hist));
 	size_t nh = 0;
+	app->tctx_budget = 10;
 	for (size_t i = n; i > 0; i--) {
 		Line ln;
-		if (msg_to_line(app, json_at(msgs, i - 1), w, &ln) < 0)
+		if (msg_to_line(app, json_at(msgs, i - 1), w, &ln, msgs) < 0)
 			continue;
-		if (ln.msgid && find_line(w, ln.msgid)) {
+		Line *old = ln.msgid ? find_line(w, ln.msgid) : NULL;
+		if (old) {
+			if (strcmp(old->text, ln.text) != 0) {
+				char *tmp = old->text;
+				old->text = ln.text;
+				ln.text = tmp;
+				old->ctx_len = ln.ctx_len;
+				old->meta_len = ln.meta_len;
+			}
 			line_free(&ln);
 			continue;
 		}
 		hist[nh++] = ln;
 	}
+	app->tctx_budget = -1;
 	json_free(j);
 
 	size_t total = nh + w->nlines;
@@ -428,6 +606,8 @@ void app_switch(App *app, size_t idx)
 {
 	if (idx >= app->nwins)
 		return;
+	if (idx != app->cur)
+		reset_modes(app);
 	Window *old = current(app);
 	if (old->needs_read && idx != app->cur)
 		mark_read(app, old);
@@ -737,6 +917,16 @@ void app_init(App *app)
 	app->goto_list = NULL;
 	app->goto_n = 0;
 	app->goto_idx = 0;
+	app->sel_id = NULL;
+	app->reply_tmid = NULL;
+	app->reply_to = NULL;
+	app->react_active = 0;
+	app->react_list = NULL;
+	app->react_n = 0;
+	app->tctx_id = NULL;
+	app->tctx_text = NULL;
+	app->ntctx = 0;
+	app->tctx_budget = -1;
 	app->reconnect_at = 0;
 	app->reconnect_delay = 0;
 	Window *st = win_new(app, NULL, "(status)", 0);
@@ -751,6 +941,16 @@ void app_free(App *app)
 	free_subs(app);
 	app_tab_reset(app);
 	free(app->goto_list);
+	free(app->sel_id);
+	free(app->reply_tmid);
+	free(app->reply_to);
+	free(app->react_list);
+	for (size_t i = 0; i < app->ntctx; i++) {
+		free(app->tctx_id[i]);
+		free(app->tctx_text[i]);
+	}
+	free(app->tctx_id);
+	free(app->tctx_text);
 	for (int i = 0; i < app->input.nhistory; i++)
 		free(app->input.history[i]);
 }
@@ -775,7 +975,7 @@ void app_start(App *app)
 static int send_text(App *app, Window *w, const char *text)
 {
 	if (!w->rid) {
-		app_error(app, w, "Not in a room, use /join or /query, or switch windows with Alt+number");
+		app_error(app, w, "Not in a room, use /join or /query, or switch windows with Ctrl+G");
 		return -1;
 	}
 	Buf body;
@@ -784,6 +984,11 @@ static int send_text(App *app, Window *w, const char *text)
 	buf_json_str(&body, w->rid);
 	buf_puts(&body, ",\"msg\":");
 	buf_json_str(&body, text);
+	int reply = app->reply_tmid && w == current(app);
+	if (reply) {
+		buf_puts(&body, ",\"tmid\":");
+		buf_json_str(&body, app->reply_tmid);
+	}
 	buf_puts(&body, "}}");
 	Err e;
 	Json *j = rc_post(&app->rc, "/api/v1/chat.sendMessage", body.data, e.err, sizeof(e.err));
@@ -796,6 +1001,8 @@ static int send_text(App *app, Window *w, const char *text)
 	if (m)
 		add_message(app, w, m, 0);
 	json_free(j);
+	if (reply)
+		app_reply_cancel(app);
 	return 0;
 }
 
@@ -1149,6 +1356,7 @@ static void cmd_help(App *app)
 		"/reconnect              reconnect the realtime connection",
 		"/quit                   exit",
 		"Keys: Ctrl+G go to a window by number or name, Ctrl+X jump to activity,",
+		"      Ctrl+R select a message to reply in its thread (r) or react to it (+),",
 		"      Ctrl+N/P next/previous, Alt+1..9,0 and Alt+q..o switch windows,",
 		"      PgUp/PgDn scroll, Tab/Shift+Tab cycle @mentions, // sends a leading slash",
 	};
@@ -1398,4 +1606,179 @@ void app_jump_activity(App *app)
 	}
 	if (best < app->nwins)
 		app_switch(app, best);
+}
+
+static int selectable(const Line *ln)
+{
+	return ln->msgid && (ln->kind == LINE_MSG || ln->kind == LINE_ACTION);
+}
+
+static long selected_index(App *app)
+{
+	Window *w = current(app);
+	if (!app->sel_id)
+		return -1;
+	for (size_t i = w->nlines; i > 0; i--)
+		if (w->lines[i - 1].msgid && strcmp(w->lines[i - 1].msgid, app->sel_id) == 0)
+			return (long)i - 1;
+	return -1;
+}
+
+static void select_line(App *app, const Line *ln)
+{
+	free(app->sel_id);
+	app->sel_id = xstrdup(ln->msgid);
+	app->dirty = 1;
+}
+
+void app_select_start(App *app)
+{
+	Window *w = current(app);
+	reset_modes(app);
+	for (size_t i = w->nlines; i > 0; i--) {
+		if (selectable(&w->lines[i - 1])) {
+			select_line(app, &w->lines[i - 1]);
+			return;
+		}
+	}
+	app_error(app, w, "No message to select here");
+}
+
+void app_select_move(App *app, int dir)
+{
+	Window *w = current(app);
+	long i = selected_index(app);
+	if (i < 0) {
+		app_select_start(app);
+		return;
+	}
+	for (long k = i + dir; k >= 0 && (size_t)k < w->nlines; k += dir) {
+		if (selectable(&w->lines[k])) {
+			select_line(app, &w->lines[k]);
+			return;
+		}
+	}
+}
+
+void app_select_end(App *app)
+{
+	free(app->sel_id);
+	app->sel_id = NULL;
+	app->react_active = 0;
+	app->dirty = 1;
+}
+
+void app_reply_start(App *app)
+{
+	long i = selected_index(app);
+	if (i < 0) {
+		app_select_end(app);
+		return;
+	}
+	const Line *ln = &current(app)->lines[i];
+	app_reply_cancel(app);
+	app->reply_tmid = xstrdup(ln->tmid ? ln->tmid : ln->msgid);
+	app->reply_to = xstrdup(ln->name ? ln->name : ln->nick);
+	app_select_end(app);
+}
+
+void app_reply_cancel(App *app)
+{
+	free(app->reply_tmid);
+	app->reply_tmid = NULL;
+	free(app->reply_to);
+	app->reply_to = NULL;
+	app->dirty = 1;
+}
+
+static const char *const emojis[] = {
+	":thumbsup:", ":thumbsdown:", ":heart:", ":joy:", ":smile:", ":slight_smile:", ":laughing:",
+	":rofl:", ":sweat_smile:", ":wink:", ":heart_eyes:", ":tada:", ":partying_face:", ":eyes:",
+	":rocket:", ":pray:", ":clap:", ":raised_hands:", ":muscle:", ":fire:", ":100:", ":ok_hand:",
+	":white_check_mark:", ":heavy_check_mark:", ":x:", ":thinking:", ":wave:", ":cry:", ":sob:",
+	":scream:", ":see_no_evil:", ":sunglasses:", ":star:", ":coffee:", ":beer:", ":bug:", ":warning:",
+	":question:", ":exclamation:", ":point_up:", ":face_palm:", ":shrug:", ":confused:",
+};
+
+void app_react_start(App *app)
+{
+	if (selected_index(app) < 0) {
+		app_select_end(app);
+		return;
+	}
+	app->react_active = 1;
+	app->react_text[0] = '\0';
+	app_react_update(app);
+}
+
+void app_react_update(App *app)
+{
+	const char *q = app->react_text[0] == ':' ? app->react_text + 1 : app->react_text;
+	size_t n = strlen(q);
+	while (n > 0 && q[n - 1] == ':')
+		n--;
+	size_t total = sizeof(emojis) / sizeof(emojis[0]);
+	app->react_list = xrealloc(app->react_list, total * sizeof(*app->react_list));
+	app->react_n = 0;
+	app->react_idx = 0;
+	app->dirty = 1;
+	if (n == 0)
+		return;
+	for (int pass = 0; pass < 2; pass++) {
+		for (size_t i = 0; i < total; i++) {
+			int prefix = strncasecmp_ascii(emojis[i] + 1, q, n) == 0;
+			int inside = 0;
+			for (const char *p = emojis[i] + 2; *p && !inside; p++)
+				inside = strncasecmp_ascii(p, q, n) == 0;
+			if (pass == 0 ? prefix : (!prefix && inside))
+				app->react_list[app->react_n++] = emojis[i];
+		}
+	}
+}
+
+void app_react_cycle(App *app, int dir)
+{
+	if (app->react_n == 0)
+		return;
+	app->react_idx = (app->react_idx + app->react_n + (size_t)(dir > 0 ? 1 : -1)) % app->react_n;
+	app->dirty = 1;
+}
+
+void app_react_send(App *app)
+{
+	long i = selected_index(app);
+	Buf emoji;
+	buf_init(&emoji);
+	if (app->react_n > 0) {
+		buf_puts(&emoji, app->react_list[app->react_idx]);
+	} else {
+		const char *q = app->react_text;
+		while (*q == ':')
+			q++;
+		size_t n = strlen(q);
+		while (n > 0 && q[n - 1] == ':')
+			n--;
+		if (n > 0) {
+			buf_putc(&emoji, ':');
+			buf_append(&emoji, q, n);
+			buf_putc(&emoji, ':');
+		}
+	}
+	if (i >= 0 && emoji.len > 0) {
+		Buf body;
+		buf_init(&body);
+		buf_puts(&body, "{\"messageId\":");
+		buf_json_str(&body, app->sel_id);
+		buf_puts(&body, ",\"emoji\":");
+		buf_json_str(&body, emoji.data);
+		buf_puts(&body, "}");
+		Err e;
+		Json *j = rc_post(&app->rc, "/api/v1/chat.react", body.data, e.err, sizeof(e.err));
+		buf_free(&body);
+		if (!j)
+			app_error(app, current(app), "Could not react with %s: %s", emoji.data, e.err);
+		json_free(j);
+	}
+	buf_free(&emoji);
+	app_select_end(app);
 }

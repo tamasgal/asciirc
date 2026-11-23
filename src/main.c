@@ -166,22 +166,25 @@ static char *read_password(const char *prompt)
 	return p;
 }
 
-static void handle_goto_key(App *app, const Key *k)
+static void prompt_edit(char *t, size_t cap, const Key *k)
 {
-	char *t = app->goto_text;
 	size_t len = strlen(t);
-	switch (k->type) {
-	case K_CHAR:
-		if (len + strlen(k->utf8) < sizeof(app->goto_text))
-			strcat(t, k->utf8);
-		break;
-	case K_BACKSPACE:
+	if (k->type == K_CHAR && len + strlen(k->utf8) < cap) {
+		strcat(t, k->utf8);
+	} else if (k->type == K_BACKSPACE) {
 		while (len > 0 && ((unsigned char)t[len - 1] & 0xc0) == 0x80)
 			len--;
 		if (len > 0)
 			len--;
 		t[len] = '\0';
-		break;
+	} else if (k->type == K_CTRL && k->c == 'u') {
+		t[0] = '\0';
+	}
+}
+
+static void handle_goto_key(App *app, const Key *k)
+{
+	switch (k->type) {
 	case K_ENTER:
 		app->goto_active = 0;
 		if (app->goto_match >= 0)
@@ -197,15 +200,62 @@ static void handle_goto_key(App *app, const Key *k)
 		app_goto_cycle(app, -1);
 		return;
 	case K_CTRL:
-		if (k->c == 'g' || k->c == 'c')
+		if (k->c == 'g' || k->c == 'c') {
 			app->goto_active = 0;
-		else if (k->c == 'u')
-			t[0] = '\0';
+			return;
+		}
 		break;
 	default:
 		break;
 	}
+	prompt_edit(app->goto_text, sizeof(app->goto_text), k);
 	app_goto_update(app);
+}
+
+static void handle_react_key(App *app, const Key *k)
+{
+	switch (k->type) {
+	case K_ENTER:
+		app_react_send(app);
+		return;
+	case K_ESC:
+		app->react_active = 0;
+		return;
+	case K_TAB:
+		app_react_cycle(app, 1);
+		return;
+	case K_BTAB:
+		app_react_cycle(app, -1);
+		return;
+	case K_CTRL:
+		if (k->c == 'r' || k->c == 'c') {
+			app_select_end(app);
+			return;
+		}
+		break;
+	default:
+		break;
+	}
+	prompt_edit(app->react_text, sizeof(app->react_text), k);
+	app_react_update(app);
+}
+
+static void handle_select_key(App *app, const Key *k)
+{
+	const char *c = k->type == K_CHAR ? k->utf8 : "";
+	if (k->type == K_UP || strcmp(c, "k") == 0)
+		app_select_move(app, -1);
+	else if (k->type == K_DOWN || strcmp(c, "j") == 0)
+		app_select_move(app, 1);
+	else if (k->type == K_PGUP || k->type == K_PGDN)
+		for (int i = 0; i < 10; i++)
+			app_select_move(app, k->type == K_PGUP ? -1 : 1);
+	else if (k->type == K_ENTER || strcmp(c, "r") == 0)
+		app_reply_start(app);
+	else if (strcmp(c, "+") == 0)
+		app_react_start(app);
+	else if (k->type == K_ESC || strcmp(c, "q") == 0 || (k->type == K_CTRL && (k->c == 'r' || k->c == 'c')))
+		app_select_end(app);
 }
 
 static void handle_key(App *app, const Key *k)
@@ -216,12 +266,21 @@ static void handle_key(App *app, const Key *k)
 		page = 1;
 	if (k->type != K_TAB && k->type != K_BTAB)
 		app_tab_reset(app);
-	if (app->goto_active) {
-		handle_goto_key(app, k);
+	if (app->goto_active || app->react_active || app->sel_id) {
+		if (app->goto_active)
+			handle_goto_key(app, k);
+		else if (app->react_active)
+			handle_react_key(app, k);
+		else
+			handle_select_key(app, k);
 		app->dirty = 1;
 		return;
 	}
 	switch (k->type) {
+	case K_ESC:
+		if (app->reply_tmid)
+			app_reply_cancel(app);
+		break;
 	case K_ENTER: {
 		char *line = xstrdup(app->input.text);
 		ui_input_push_history(&app->input, line);
@@ -266,6 +325,8 @@ static void handle_key(App *app, const Key *k)
 			app_goto_update(app);
 		} else if (k->c == 'x')
 			app_jump_activity(app);
+		else if (k->c == 'r')
+			app_select_start(app);
 		else
 			ui_input_key(&app->input, k);
 		break;

@@ -444,7 +444,7 @@ static void put_marker(Buf *pre, const char *params)
 	buf_putc(pre, ' ');
 }
 
-static void render_line(const Line *ln, int width, RowList *rl)
+static void render_line(const Line *ln, int width, RowList *rl, int selected)
 {
 	Buf pre;
 	buf_init(&pre);
@@ -453,7 +453,7 @@ static void render_line(const Line *ln, int width, RowList *rl)
 	struct tm tm;
 	localtime_r(&ln->ts, &tm);
 	strftime(ts, sizeof(ts), "%H:%M", &tm);
-	style(&pre, theme->time);
+	style(&pre, selected ? theme->bar_act : theme->time);
 	buf_puts(&pre, ts);
 	style(&pre, NULL);
 	buf_putc(&pre, ' ');
@@ -499,6 +499,8 @@ static void render_line(const Line *ln, int width, RowList *rl)
 
 	const char *text = ln->text ? ln->text : "";
 	size_t len = strlen(text);
+	size_t dim_end = ln->ctx_len < len ? ln->ctx_len : len;
+	size_t dim_start = ln->meta_len < len ? len - ln->meta_len : 0;
 	int indent = prew < width / 2 ? prew : 2;
 	int first_avail = width - prew;
 	int avail = width - indent;
@@ -544,8 +546,21 @@ static void render_line(const Line *ln, int width, RowList *rl)
 			buf_append(&row, pre.data, pre.len);
 		else
 			put_spaces(&row, indent);
-		style(&row, text_style);
-		buf_append(&row, text + row_start, row_end - row_start);
+		for (size_t a = row_start; a < row_end;) {
+			size_t e = row_end;
+			const char *st = text_style;
+			if (a < dim_end) {
+				e = row_end < dim_end ? row_end : dim_end;
+				st = theme->daychange;
+			} else if (a >= dim_start) {
+				st = theme->daychange;
+			} else if (row_end > dim_start) {
+				e = dim_start;
+			}
+			style(&row, st);
+			buf_append(&row, text + a, e - a);
+			a = e;
+		}
 		style(&row, NULL);
 		rows_push(rl, buf_steal(&row));
 		if (brk == 2)
@@ -750,6 +765,14 @@ static void draw_status(App *app, Buf *out, int row)
 		hw += put_trunc(&hint, app->comp_names[app->comp_idx], cols / 2);
 		buf_putc(&hint, ']');
 		style(&hint, theme->bar);
+	} else if (app->react_active && app->react_n > 0) {
+		snprintf(tmp, sizeof(tmp), "[React %zu/%zu: ", app->react_idx + 1, app->react_n);
+		style(&hint, theme->bar_act);
+		buf_puts(&hint, tmp);
+		hw = (int)strlen(tmp) + 1;
+		hw += put_trunc(&hint, app->react_list[app->react_idx], cols / 2);
+		buf_putc(&hint, ']');
+		style(&hint, theme->bar);
 	} else if (app->goto_active && app->goto_n > 0) {
 		snprintf(tmp, sizeof(tmp), "[Goto %zu/%zu: ", app->goto_idx + 1, app->goto_n);
 		style(&hint, theme->bar_act);
@@ -789,12 +812,22 @@ static void draw_status(App *app, Buf *out, int row)
 	buf_free(&s);
 }
 
-static void draw_messages(Window *w, Buf *out, int top, int height)
+static void draw_messages(Window *w, const char *sel_id, Buf *out, int top, int height)
 {
+	size_t sel = 0;
+	if (sel_id)
+		for (size_t i = w->nlines; i > 0 && !sel; i--)
+			if (w->lines[i - 1].msgid && strcmp(w->lines[i - 1].msgid, sel_id) == 0)
+				sel = i;
+	size_t sel_lo = 0, sel_hi = 0;
 	RowList all = { NULL, 0, 0 };
-	for (size_t i = w->nlines; i > 0 && all.n < (size_t)(height + w->scroll); i--) {
+	for (size_t i = w->nlines; i > 0 && (all.n < (size_t)(height + w->scroll) || (sel && i >= sel)); i--) {
 		RowList one = { NULL, 0, 0 };
-		render_line(&w->lines[i - 1], cols, &one);
+		render_line(&w->lines[i - 1], cols, &one, i == sel);
+		if (i == sel) {
+			sel_lo = all.n;
+			sel_hi = all.n + one.n;
+		}
 		for (size_t k = one.n; k > 0; k--)
 			rows_push(&all, one.rows[k - 1]);
 		free(one.rows);
@@ -802,6 +835,12 @@ static void draw_messages(Window *w, Buf *out, int top, int height)
 			rows_push(&all, render_day_change(w->lines[i - 1].ts));
 	}
 	int total = (int)all.n;
+	if (sel) {
+		if ((int)sel_lo < w->scroll)
+			w->scroll = (int)sel_lo;
+		else if ((int)sel_hi > w->scroll + height)
+			w->scroll = (int)sel_hi - height;
+	}
 	if (w->scroll > 0 && total < height + w->scroll)
 		w->scroll = total > height ? total - height : 0;
 
@@ -822,41 +861,62 @@ static void draw_messages(Window *w, Buf *out, int top, int height)
 	free(all.rows);
 }
 
-static int draw_goto(App *app, Buf *out, int row)
+static int draw_prompt(Buf *out, int row, const char *label, const char *text, const char *hint)
 {
 	buf_printf(out, "\x1b[%d;1H", row);
 	style(out, theme->bar_act);
-	buf_puts(out, "[goto]");
+	buf_printf(out, "[%s]", label);
 	style(out, NULL);
 	buf_putc(out, ' ');
-	int col = 8 + put_trunc(out, app->goto_text, cols / 3);
+	int col = (int)strlen(label) + 4 + put_trunc(out, text, cols / 3);
 	style(out, theme->time);
-	if (app->goto_match >= 0) {
-		Window *m = app->wins[app->goto_match];
-		char tmp[32];
-		snprintf(tmp, sizeof(tmp), "  -> %ld:", app->goto_match + 1);
-		buf_puts(out, tmp);
-		put_trunc(out, win_label(m), cols - col - (int)strlen(tmp) - 1);
-	} else if (app->goto_text[0]) {
-		buf_puts(out, "  no match");
-	} else {
-		buf_puts(out, "  number or part of a name, Tab cycles, Enter switches, Esc cancels");
-	}
+	put_trunc(out, *text ? " " : "", 1);
+	put_trunc(out, hint, cols - col - 1);
 	style(out, NULL);
 	buf_puts(out, "\x1b[K");
 	return col;
+}
+
+static int draw_goto(App *app, Buf *out, int row)
+{
+	char hint[96];
+	if (app->goto_match >= 0)
+		snprintf(hint, sizeof(hint), "-> %ld:%s", app->goto_match + 1, win_label(app->wins[app->goto_match]));
+	else if (app->goto_text[0])
+		snprintf(hint, sizeof(hint), "no match");
+	else
+		snprintf(hint, sizeof(hint), "number or part of a name, Tab cycles, Enter switches, Esc cancels");
+	return draw_prompt(out, row, "goto", app->goto_text, hint);
 }
 
 static int draw_input(App *app, Buf *out, int row)
 {
 	if (app->goto_active)
 		return draw_goto(app, out, row);
+	if (app->react_active) {
+		char hint[96];
+		if (app->react_n > 0)
+			snprintf(hint, sizeof(hint), "-> %s", app->react_list[app->react_idx]);
+		else if (app->react_text[0])
+			snprintf(hint, sizeof(hint), "-> :%s:", app->react_text);
+		else
+			snprintf(hint, sizeof(hint), "emoji name, Tab cycles, Enter reacts (again removes it), Esc cancels");
+		return draw_prompt(out, row, "react", app->react_text, hint);
+	}
+	if (app->sel_id)
+		return draw_prompt(out, row, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
 	Window *w = app->wins[app->cur];
 	Input *in = &app->input;
 	buf_printf(out, "\x1b[%d;1H", row);
 	style(out, NULL);
 	buf_putc(out, '[');
 	int pw = 1 + put_trunc(out, win_label(w), cols / 3);
+	if (app->reply_to) {
+		style(out, theme->daychange);
+		buf_puts(out, " re ");
+		pw += 4 + put_trunc(out, app->reply_to, cols / 4);
+		style(out, NULL);
+	}
 	buf_puts(out, "] ");
 	pw += 2;
 
@@ -905,7 +965,7 @@ void ui_draw(App *app)
 	draw_bar(&out, 1, top.data, tw);
 	buf_free(&top);
 
-	draw_messages(w, &out, 2, rows - 3);
+	draw_messages(w, app->sel_id, &out, 2, rows - 3);
 	draw_status(app, &out, rows - 1);
 	int col = draw_input(app, &out, rows);
 	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", rows, col);
