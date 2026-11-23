@@ -5,6 +5,8 @@
 #include "ui.h"
 #include "util.h"
 
+#define ASCIIRC_VERSION "1.0.0"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <locale.h>
@@ -27,7 +29,7 @@ static void on_term(int sig)
 
 static void usage(FILE *f)
 {
-	fputs("usage: asciirc [-S name] [-s server] [-i user_id] [-t token] [-u username] [-c config] [-k]\n"
+	fputs("usage: asciirc [-S name] [-s server] [-i user_id] [-t token] [-u username] [-c config] [-k] [-v]\n"
 	      "\n"
 	      "  -S name      connect only to the server [name] of the config file\n"
 	      "  -s server    server URL, e.g. https://chat.example.com\n"
@@ -36,6 +38,7 @@ static void usage(FILE *f)
 	      "  -u username  log in with username and password instead of a token\n"
 	      "  -c config    config file (default: $XDG_CONFIG_HOME/asciirc/config)\n"
 	      "  -k           do not verify TLS certificates\n"
+	      "  -v           print the version\n"
 	      "\n"
 	      "Environment: ASCIIRC_SERVER, ASCIIRC_USER_ID, ASCIIRC_TOKEN, ASCIIRC_USERNAME\n"
 	      "Config file lines: server = ..., user_id = ..., token = ..., username = ...,\n"
@@ -378,7 +381,7 @@ int main(int argc, char **argv)
 	ov.token = getenv("ASCIIRC_TOKEN");
 	ov.username = getenv("ASCIIRC_USERNAME");
 	int c, opt_t = 0, opt_u = 0;
-	while ((c = getopt(argc, argv, "S:s:i:t:u:c:kh")) != -1) {
+	while ((c = getopt(argc, argv, "S:s:i:t:u:c:khv")) != -1) {
 		switch (c) {
 		case 'S': select = optarg; break;
 		case 's': ov.server = optarg; break;
@@ -388,6 +391,7 @@ int main(int argc, char **argv)
 		case 'c': config_path = optarg; break;
 		case 'k': ov.insecure = 1; break;
 		case 'h': usage(stdout); return 0;
+		case 'v': puts("asciirc " ASCIIRC_VERSION); return 0;
 		default: usage(stderr); return 2;
 		}
 	}
