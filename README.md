@@ -67,6 +67,8 @@ Options:
 
 Type `/help` inside the client for commands. `./asciirc -h` lists the command line options.
 
+`make install` copies the binary to `/usr/local/bin`, `make PREFIX=~/.local install` to somewhere else.
+
 ## Usage
 
 Windows:
@@ -84,3 +86,7 @@ Messages:
 - `Tab` completes @mentions
 
 Commands: `/join #channel`, `/query user`, `/part`, `/win list`, `/server`, `/theme name`, `/quit`.
+
+## License
+
+MIT, see `LICENSE`.
