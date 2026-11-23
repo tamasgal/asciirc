@@ -82,6 +82,7 @@ typedef struct {
 	int ever_ready;
 	int show_usernames;
 	char **comp;
+	char **comp_names;
 	size_t ncomp;
 	size_t comp_idx;
 	size_t comp_start;

@@ -686,6 +686,7 @@ void app_init(App *app)
 	app->ever_ready = 0;
 	app->show_usernames = 0;
 	app->comp = NULL;
+	app->comp_names = NULL;
 	app->ncomp = 0;
 	app->reconnect_at = 0;
 	app->reconnect_delay = 0;
@@ -1180,10 +1181,14 @@ static int name_completes(const char *name, const char *prefix, size_t plen)
 
 void app_tab_reset(App *app)
 {
-	for (size_t i = 0; i < app->ncomp; i++)
+	for (size_t i = 0; i < app->ncomp; i++) {
 		free(app->comp[i]);
+		free(app->comp_names[i]);
+	}
 	free(app->comp);
+	free(app->comp_names);
 	app->comp = NULL;
+	app->comp_names = NULL;
 	app->ncomp = 0;
 }
 
@@ -1203,7 +1208,9 @@ static void build_completions(App *app, const char *prefix, size_t plen)
 		if (k < app->ncomp)
 			continue;
 		app->comp = xrealloc(app->comp, (app->ncomp + 1) * sizeof(*app->comp));
-		app->comp[app->ncomp++] = xstrdup(ln->nick);
+		app->comp_names = xrealloc(app->comp_names, (app->ncomp + 1) * sizeof(*app->comp_names));
+		app->comp[app->ncomp] = xstrdup(ln->nick);
+		app->comp_names[app->ncomp++] = xstrdup(ln->name ? ln->name : ln->nick);
 	}
 }
 

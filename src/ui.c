@@ -669,6 +669,26 @@ static void draw_status(App *app, Buf *out, int row)
 		sw += 10;
 	}
 
+	Buf hint;
+	buf_init(&hint);
+	int hw = 0;
+	if (app->ncomp > 0) {
+		snprintf(tmp, sizeof(tmp), "[Tab %zu/%zu: ", app->comp_idx + 1, app->ncomp);
+		style(&hint, theme->bar_act);
+		buf_puts(&hint, tmp);
+		hw = (int)strlen(tmp) + 1;
+		hw += put_trunc(&hint, app->comp_names[app->comp_idx], cols / 2);
+		buf_putc(&hint, ']');
+		style(&hint, theme->bar);
+		int sep = s.len > 0 && s.data[s.len - 1] != ' ';
+		if (sw + hw + sep <= cols) {
+			if (sep)
+				buf_putc(&s, ' ');
+			buf_append(&s, hint.data, hint.len);
+			sw += hw + sep;
+		}
+	}
+
 	if (sw > cols) {
 		/* too wide, draw a plain bar */
 		buf_free(&s);
@@ -676,8 +696,14 @@ static void draw_status(App *app, Buf *out, int row)
 		snprintf(tmp, sizeof(tmp), " [%zu]", app->cur + 1);
 		buf_puts(&s, tmp);
 		sw = (int)strlen(tmp);
+		if (hw > 0 && sw + hw + 1 <= cols) {
+			buf_putc(&s, ' ');
+			buf_append(&s, hint.data, hint.len);
+			sw += hw + 1;
+		}
 		sw += put_trunc(&s, w->name, cols - sw > 0 ? cols - sw : 0);
 	}
+	buf_free(&hint);
 	draw_bar(out, row, s.data, sw);
 	buf_free(&s);
 }
