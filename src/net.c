@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include <openssl/err.h>
@@ -117,6 +118,9 @@ Conn *net_connect(const Url *u, char *err, size_t errlen)
 		snprintf(err, errlen, "connect %s:%s: %s", u->host, u->port, strerror(saved));
 		return NULL;
 	}
+	struct timeval tv = { NET_TIMEOUT, 0 };
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 #ifdef SO_NOSIGPIPE
 	int one = 1;
 	setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));

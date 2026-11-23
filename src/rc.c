@@ -201,6 +201,15 @@ static void ddp_handle(Rc *rc, const Json *m, const RcHandlers *h, void *ctx)
 		rc_ddp_disconnect(rc);
 	} else if (strcmp(type, "result") == 0) {
 		const char *id = json_get_str(m, "id");
+		if (id && id[0] == 'm' && h->result) {
+			const Json *e = json_get(m, "error");
+			const char *reason = json_get_str(e, "reason");
+			if (!reason)
+				reason = json_get_str(e, "message");
+			h->result(ctx, (unsigned)strtoul(id + 1, NULL, 10), json_get(m, "result"),
+				  e ? (reason ? reason : "unknown error") : NULL);
+			return;
+		}
 		if (!id || strcmp(id, DDP_LOGIN_ID) != 0)
 			return;
 		const Json *e = json_get(m, "error");
@@ -271,4 +280,19 @@ int rc_ddp_process(Rc *rc, const RcHandlers *h, void *ctx)
 		return -1;
 	}
 	return 0;
+}
+
+unsigned rc_ddp_call(Rc *rc, const char *method, const char *params)
+{
+	if (rc->state != DDP_READY)
+		return 0;
+	unsigned id = rc->next_id++;
+	Buf b;
+	buf_init(&b);
+	buf_printf(&b, "{\"msg\":\"method\",\"id\":\"m%u\",\"method\":", id);
+	buf_json_str(&b, method);
+	buf_printf(&b, ",\"params\":%s}", params);
+	ddp_send(rc, &b);
+	buf_free(&b);
+	return id;
 }

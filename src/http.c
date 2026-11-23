@@ -110,9 +110,12 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 			break;
 		if (r < 0) {
 			/* some servers drop tls without close_notify */
-			if (raw.len > 0)
+			if (raw.len > 0 && r != NET_AGAIN)
 				break;
-			snprintf(err, errlen, "read failed");
+			if (r == NET_AGAIN)
+				snprintf(err, errlen, "no answer from the server within %d seconds", NET_TIMEOUT);
+			else
+				snprintf(err, errlen, "read failed");
 			buf_free(&raw);
 			net_close(c);
 			return -1;

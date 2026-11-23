@@ -544,11 +544,22 @@ static const char *history_endpoint(char type)
 	}
 }
 
+static void merge_history(App *app, Window *w, const Json *msgs);
+
 static void load_history(App *app, Window *w)
 {
 	w->history_loaded = 1;
 	const char *ep = history_endpoint(w->type);
 	if (!w->rid || !ep)
+		return;
+	Buf params;
+	buf_init(&params);
+	buf_puts(&params, "[");
+	buf_json_str(&params, w->rid);
+	buf_printf(&params, ",null,%d,null]", HISTORY_COUNT);
+	w->history_call = rc_ddp_call(&w->srv->rc, "loadHistory", params.data);
+	buf_free(&params);
+	if (w->history_call)
 		return;
 	Buf path;
 	buf_init(&path);
@@ -562,7 +573,12 @@ static void load_history(App *app, Window *w)
 		app_error(app, w, "Could not load history: %s", e.err);
 		return;
 	}
-	const Json *msgs = json_get(j, "messages");
+	merge_history(app, w, json_get(j, "messages"));
+	json_free(j);
+}
+
+static void merge_history(App *app, Window *w, const Json *msgs)
+{
 	size_t n = json_len(msgs);
 	Line *hist = xcalloc(n ? n : 1, sizeof(*hist));
 	size_t nh = 0;
@@ -586,7 +602,13 @@ static void load_history(App *app, Window *w)
 		hist[nh++] = ln;
 	}
 	w->srv->tctx_budget = -1;
-	json_free(j);
+	for (size_t i = 1; i < nh; i++) {
+		Line ln = hist[i];
+		size_t k = i;
+		for (; k > 0 && hist[k - 1].ts > ln.ts; k--)
+			hist[k] = hist[k - 1];
+		hist[k] = ln;
+	}
 
 	size_t total = nh + w->nlines;
 	Line *merged = xcalloc(total ? total : 1, sizeof(*merged));
@@ -883,7 +905,24 @@ static void on_ready(void *ctx)
 	srv->ever_ready = 1;
 }
 
-static const RcHandlers handlers = { on_stream, on_status, on_ready };
+static void on_result(void *ctx, unsigned id, const Json *result, const char *error)
+{
+	Server *srv = ctx;
+	App *app = srv->app;
+	for (size_t i = 0; i < app->nwins; i++) {
+		Window *w = app->wins[i];
+		if (w->srv != srv || w->history_call != id)
+			continue;
+		w->history_call = 0;
+		if (error)
+			app_error(app, w, "Could not load history: %s", error);
+		else
+			merge_history(app, w, json_get(result, "messages"));
+		return;
+	}
+}
+
+static const RcHandlers handlers = { on_stream, on_status, on_ready, on_result };
 
 static void schedule_reconnect(Server *srv)
 {

@@ -15,6 +15,7 @@ typedef struct {
 typedef struct Conn Conn;
 
 #define NET_AGAIN (-2)
+#define NET_TIMEOUT 20
 
 int url_parse(const char *s, Url *u);
 

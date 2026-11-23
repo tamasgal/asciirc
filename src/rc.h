@@ -26,6 +26,7 @@ typedef struct {
 	void (*stream)(void *ctx, const char *collection, const char *event, const Json *args);
 	void (*status)(void *ctx, int is_error, const char *text);
 	void (*ready)(void *ctx);
+	void (*result)(void *ctx, unsigned id, const Json *result, const char *error);
 } RcHandlers;
 
 void rc_init(Rc *rc, const Url *url);
@@ -41,5 +42,6 @@ int rc_ddp_connect(Rc *rc, char *err, size_t errlen);
 void rc_ddp_disconnect(Rc *rc);
 int rc_ddp_fd(const Rc *rc);
 int rc_ddp_process(Rc *rc, const RcHandlers *h, void *ctx);
+unsigned rc_ddp_call(Rc *rc, const char *method, const char *params);
 
 #endif

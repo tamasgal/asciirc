@@ -52,6 +52,7 @@ typedef struct {
 	int unread;
 	int scroll;
 	int history_loaded;
+	unsigned history_call;
 	int needs_read;
 } Window;
 
