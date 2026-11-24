@@ -1,6 +1,7 @@
 # asciirc
 
-A terminal Rocket.Chat client in the style of irssi.
+A terminal Rocket.Chat client in the style of irssi. It takes around **6MB of memory** and runs easily
+on devices like a Pi Zero `:)`
 
 ![asciirc](screenshot.png)
 
