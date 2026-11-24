@@ -1,0 +1,16 @@
+name: homebrew
+on:
+  push:
+    tags: ['v*']
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: asciirc
+          homebrew-tap: tamasgal/homebrew-tap
+          push-to: tamasgal/homebrew-tap
+          create-pullrequest: false
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
