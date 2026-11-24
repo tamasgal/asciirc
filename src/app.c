@@ -1452,7 +1452,7 @@ static void cmd_theme(App *app, const char *arg)
 	buf_init(&b);
 	for (size_t i = 0; ui_theme_at(i); i++)
 		buf_printf(&b, "%s%s", i ? ", " : "", ui_theme_at(i));
-	app_info(app, current(app), "Current theme: %s. Available: %s", ui_theme_name(), b.data);
+	app_info(app, current(app), "Current theme: %s. Available: %s, or random", ui_theme_name(), b.data);
 	buf_free(&b);
 }
 
@@ -1504,7 +1504,7 @@ static void cmd_help(App *app)
 		"/names                  list members of the current room",
 		"/topic [text]           show or set the topic",
 		"/clear                  clear the current window",
-		"/theme [name]           list themes or switch to one",
+		"/theme [name|random]    list themes or switch to one",
 		"/reconnect              reconnect the realtime connection",
 		"/server [name]          list servers, or pick the one for the status window",
 		"/quit                   exit",

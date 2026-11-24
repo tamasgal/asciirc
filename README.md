@@ -65,7 +65,7 @@ Options:
 
 - `server`, `user_id`, `token`, `username`: where and how to log in
 - `insecure = 1`: do not verify the TLS certificate of that server
-- `theme`: `default`, `solarized-dark`, `solarized-light`, `monokai`, `gruvbox`, `nord` or `dracula`
+- `theme`: `default`, `solarized-dark`, `solarized-light`, `monokai`, `gruvbox`, `gruvbox-light`, `nord`, `dracula`, `tokyo-night`, `catppuccin-mocha`, `catppuccin-latte`, `one-dark`, `everforest`, `rose-pine`, `kanagawa`, `ayu-dark`, `ayu-light`, `github-dark`, `github-light`, `nightfox`, `palenight`, `zenburn`, `papercolor-light`, `synthwave`, `matrix`, `amber`, `mono`, or `random` for a different one at every start
 - `nicks = name` shows real names, `nicks = username` shows usernames
 
 `./asciirc -S work` connects to the `[work]` server only.
@@ -97,7 +97,7 @@ Messages:
 - `+` react: type an emoji name, `Tab` cycles matches, `Enter` sends, the same emoji again removes it
 - `Tab` completes @mentions
 
-Commands: `/join #channel`, `/query user`, `/part`, `/win list`, `/server`, `/theme name`, `/quit`.
+Commands: `/join #channel`, `/query user`, `/part`, `/win list`, `/server`, `/theme name|random`, `/quit`.
 
 ## License
 
