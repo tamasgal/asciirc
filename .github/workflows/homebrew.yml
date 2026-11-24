@@ -6,11 +6,23 @@ jobs:
   bump:
     runs-on: ubuntu-latest
     steps:
-      - uses: mislav/bump-homebrew-formula-action@v3
-        with:
-          formula-name: asciirc
-          homebrew-tap: tamasgal/homebrew-tap
-          push-to: tamasgal/homebrew-tap
-          create-pullrequest: false
+      - name: Update the formula in tamasgal/homebrew-tap
         env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          git clone "https://x-access-token:${TOKEN}@github.com/tamasgal/homebrew-tap.git" tap
+          cd tap
+          sed -i -E \
+            -e "s|^  url \".*\"|  url \"${url}\"|" \
+            -e "s|^  sha256 \".*\"|  sha256 \"${sha}\"|" \
+            Formula/asciirc.rb
+          git diff
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "asciirc ${version}"
+          git push
