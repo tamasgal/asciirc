@@ -100,6 +100,12 @@ static void reset_modes(App *app)
 	free(app->reply_to);
 	app->reply_to = NULL;
 	app->react_active = 0;
+	app->scroll_mode = 0;
+	app->search_active = 0;
+	app->search_text[0] = '\0';
+	app->search_hit = 0;
+	app->search_reveal = 0;
+	app->search_failed = 0;
 }
 
 static void win_remove(App *app, Window *w)
@@ -996,6 +1002,12 @@ void app_init(App *app)
 	app->react_active = 0;
 	app->react_list = NULL;
 	app->react_n = 0;
+	app->scroll_mode = 0;
+	app->search_active = 0;
+	app->search_text[0] = '\0';
+	app->search_hit = 0;
+	app->search_reveal = 0;
+	app->search_failed = 0;
 	Window *st = win_new(app, NULL, NULL, "(status)", 0);
 	st->history_loaded = 1;
 }
@@ -1499,7 +1511,8 @@ static void cmd_help(App *app)
 		"Keys: Ctrl+G go to a window by number or name, Ctrl+X jump to activity,",
 		"      Ctrl+R select a message to reply in its thread (r) or react to it (+),",
 		"      Ctrl+N/P next/previous, Alt+1..9,0 and Alt+q..o switch windows,",
-		"      PgUp/PgDn scroll, Tab/Shift+Tab cycle @mentions, // sends a leading slash",
+		"      PgUp/PgDn scroll, Ctrl+S scroll mode with vi keys and / search,",
+		"      Tab/Shift+Tab cycle @mentions, // sends a leading slash",
 	};
 	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
 		app_info(app, current(app), "%s", help[i]);
@@ -1809,6 +1822,57 @@ void app_select_move(App *app, int dir)
 			return;
 		}
 	}
+}
+
+void app_scroll_start(App *app)
+{
+	reset_modes(app);
+	app->scroll_mode = 1;
+	app->dirty = 1;
+}
+
+void app_scroll_end(App *app)
+{
+	reset_modes(app);
+	current(app)->scroll = 0;
+	app->dirty = 1;
+}
+
+static int ci_contains(const char *s, const char *q)
+{
+	size_t n = strlen(q);
+	if (!s || n == 0)
+		return 0;
+	for (; *s; s++) {
+		size_t i = 0;
+		while (i < n && s[i] && tolower((unsigned char)s[i]) == tolower((unsigned char)q[i]))
+			i++;
+		if (i == n)
+			return 1;
+	}
+	return 0;
+}
+
+/* dir -1 searches older lines, 1 newer ones, starting at the current hit or at the bottom */
+void app_search(App *app, int dir)
+{
+	Window *w = current(app);
+	const char *q = app->search_text;
+	if (app->search_hit > w->nlines)
+		app->search_hit = 0;
+	long k = app->search_hit ? (long)app->search_hit - 1 : dir < 0 ? (long)w->nlines : -1;
+	for (k += dir; k >= 0 && (size_t)k < w->nlines; k += dir) {
+		const Line *ln = &w->lines[k];
+		if (ci_contains(ln->text, q) || ci_contains(ln->nick, q) || ci_contains(ln->name, q)) {
+			app->search_hit = (size_t)k + 1;
+			app->search_reveal = 1;
+			app->search_failed = 0;
+			app->dirty = 1;
+			return;
+		}
+	}
+	app->search_failed = 1;
+	app->dirty = 1;
 }
 
 void app_select_end(App *app)

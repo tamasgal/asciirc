@@ -189,6 +189,60 @@ static void handle_select_key(App *app, const Key *k)
 		app_select_end(app);
 }
 
+static void handle_search_key(App *app, const Key *k)
+{
+	if (k->type == K_ENTER || k->type == K_ESC || (k->type == K_CTRL && k->c == 'c')) {
+		app->search_active = 0;
+		if (k->type != K_ENTER) {
+			app->search_text[0] = '\0';
+			app->search_hit = 0;
+			app->search_failed = 0;
+		}
+		return;
+	}
+	prompt_edit(app->search_text, sizeof(app->search_text), k);
+	app->search_hit = 0;
+	app->search_failed = 0;
+	if (app->search_text[0])
+		app_search(app, -1);
+}
+
+static void handle_scroll_key(App *app, const Key *k, int page)
+{
+	Window *w = app->wins[app->cur];
+	const char *c = k->type == K_CHAR ? k->utf8 : "";
+	int ctrl = k->type == K_CTRL ? k->c : 0;
+	if (k->type == K_UP || strcmp(c, "k") == 0 || ctrl == 'y')
+		w->scroll += 1;
+	else if (k->type == K_DOWN || strcmp(c, "j") == 0 || ctrl == 'e')
+		w->scroll -= 1;
+	else if (ctrl == 'u')
+		w->scroll += page;
+	else if (ctrl == 'd')
+		w->scroll -= page;
+	else if (k->type == K_PGUP || ctrl == 'b')
+		w->scroll += 2 * page;
+	else if (k->type == K_PGDN || ctrl == 'f' || strcmp(c, " ") == 0)
+		w->scroll -= 2 * page;
+	else if (k->type == K_HOME || strcmp(c, "g") == 0)
+		w->scroll = 1 << 30;
+	else if (k->type == K_END || strcmp(c, "G") == 0)
+		w->scroll = 0;
+	else if (strcmp(c, "/") == 0) {
+		app->search_active = 1;
+		app->search_text[0] = '\0';
+		app->search_hit = 0;
+		app->search_failed = 0;
+	} else if (strcmp(c, "n") == 0 && app->search_text[0])
+		app_search(app, -1);
+	else if (strcmp(c, "N") == 0 && app->search_text[0])
+		app_search(app, 1);
+	else if (k->type == K_ESC || strcmp(c, "q") == 0 || ctrl == 's' || ctrl == 'c')
+		app_scroll_end(app);
+	if (w->scroll < 0)
+		w->scroll = 0;
+}
+
 static void handle_key(App *app, const Key *k)
 {
 	Window *w = app->wins[app->cur];
@@ -197,13 +251,17 @@ static void handle_key(App *app, const Key *k)
 		page = 1;
 	if (k->type != K_TAB && k->type != K_BTAB)
 		app_tab_reset(app);
-	if (app->goto_active || app->react_active || app->sel_id) {
+	if (app->goto_active || app->react_active || app->sel_id || app->scroll_mode) {
 		if (app->goto_active)
 			handle_goto_key(app, k);
 		else if (app->react_active)
 			handle_react_key(app, k);
-		else
+		else if (app->sel_id)
 			handle_select_key(app, k);
+		else if (app->search_active)
+			handle_search_key(app, k);
+		else
+			handle_scroll_key(app, k, page);
 		app->dirty = 1;
 		return;
 	}
@@ -258,6 +316,8 @@ static void handle_key(App *app, const Key *k)
 			app_jump_activity(app);
 		else if (k->c == 'r')
 			app_select_start(app);
+		else if (k->c == 's')
+			app_scroll_start(app);
 		else
 			ui_input_key(&app->input, k);
 		break;

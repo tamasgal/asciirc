@@ -88,6 +88,7 @@ Windows:
 - `Ctrl+X` jump to the next window with unread messages
 - `Ctrl+N` / `Ctrl+P` next / previous window
 - `PgUp` / `PgDn` scroll
+- `Ctrl+S` scroll mode: `j` / `k` line, `Ctrl+U` / `Ctrl+D` half page, `Ctrl+B` / `Ctrl+F` page, `g` / `G` top / bottom, `/` searches older lines as you type (`Enter` keeps the match, `Esc` cancels), `n` / `N` next older / newer match, `q` or `Esc` leaves and jumps back to the bottom
 
 Messages:
 

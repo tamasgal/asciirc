@@ -830,16 +830,18 @@ static void draw_status(App *app, Buf *out, int row)
 	buf_free(&s);
 }
 
-static void draw_messages(Window *w, const char *sel_id, Buf *out, int top, int height)
+static void draw_messages(Window *w, const char *sel_id, size_t hit, int *reveal, Buf *out, int top, int height)
 {
 	size_t sel = 0;
 	if (sel_id)
 		for (size_t i = w->nlines; i > 0 && !sel; i--)
 			if (w->lines[i - 1].msgid && strcmp(w->lines[i - 1].msgid, sel_id) == 0)
 				sel = i;
+	if (!sel && hit <= w->nlines)
+		sel = hit;
 	size_t sel_lo = 0, sel_hi = 0;
 	RowList all = { NULL, 0, 0 };
-	for (size_t i = w->nlines; i > 0 && (all.n < (size_t)(height + w->scroll) || (sel && i >= sel)); i--) {
+	for (size_t i = w->nlines; i > 0 && (all.n < (size_t)(height + w->scroll) || (sel && (i >= sel || *reveal))); i--) {
 		RowList one = { NULL, 0, 0 };
 		render_line(&w->lines[i - 1], cols, &one, i == sel);
 		if (i == sel) {
@@ -853,7 +855,12 @@ static void draw_messages(Window *w, const char *sel_id, Buf *out, int top, int 
 			rows_push(&all, render_day_change(w->lines[i - 1].ts));
 	}
 	int total = (int)all.n;
-	if (sel) {
+	if (sel && !sel_id && *reveal) {
+		int h = (int)(sel_hi - sel_lo);
+		w->scroll = (int)sel_lo - (h < height ? (height - h) / 2 : 0);
+		if (w->scroll < 0)
+			w->scroll = 0;
+	} else if (sel && sel_id) {
 		if ((int)sel_lo < w->scroll)
 			w->scroll = (int)sel_lo;
 		else if ((int)sel_hi > w->scroll + height)
@@ -861,6 +868,7 @@ static void draw_messages(Window *w, const char *sel_id, Buf *out, int top, int 
 	}
 	if (w->scroll > 0 && total < height + w->scroll)
 		w->scroll = total > height ? total - height : 0;
+	*reveal = 0;
 
 	int visible = total - w->scroll;
 	if (visible > height)
@@ -928,6 +936,16 @@ static int draw_input(App *app, Buf *out, int row)
 	}
 	if (app->sel_id)
 		return draw_prompt(out, row, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
+	if (app->search_active)
+		return draw_prompt(out, row, "search", app->search_text,
+				   app->search_failed ? "no match" : "type to search older lines, Enter keeps, Esc cancels");
+	if (app->scroll_mode) {
+		char text[72];
+		snprintf(text, sizeof(text), "%s%s", app->search_text[0] ? "/" : "", app->search_text);
+		return draw_prompt(out, row, "scroll", text,
+				   app->search_failed ? "no more matches"
+				   : "j/k line, ^U/^D half page, ^B/^F page, g/G top/bottom, / search, n/N older/newer, q quits");
+	}
 	Window *w = app->wins[app->cur];
 	Input *in = &app->input;
 	buf_printf(out, "\x1b[%d;1H", row);
@@ -993,7 +1011,7 @@ void ui_draw(App *app)
 	draw_bar(&out, 1, top.data, tw);
 	buf_free(&top);
 
-	draw_messages(w, app->sel_id, &out, 2, rows - 3);
+	draw_messages(w, app->sel_id, app->scroll_mode ? app->search_hit : 0, &app->search_reveal, &out, 2, rows - 3);
 	draw_status(app, &out, rows - 1);
 	int col = draw_input(app, &out, rows);
 	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", rows, col);

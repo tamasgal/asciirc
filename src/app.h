@@ -129,6 +129,12 @@ typedef struct App {
 	const char **react_list;
 	size_t react_n;
 	size_t react_idx;
+	int scroll_mode;
+	int search_active;
+	char search_text[64];
+	size_t search_hit;
+	int search_reveal;
+	int search_failed;
 } App;
 
 static inline Server *win_server(const App *app, const Window *w)
@@ -158,6 +164,9 @@ void app_react_start(App *app);
 void app_react_update(App *app);
 void app_react_cycle(App *app, int dir);
 void app_react_send(App *app);
+void app_scroll_start(App *app);
+void app_scroll_end(App *app);
+void app_search(App *app, int dir);
 void app_ddp_tick(App *app);
 void app_ddp_readable(App *app, Server *srv);
 long long app_next_reconnect(const App *app);
