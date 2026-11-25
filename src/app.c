@@ -1640,7 +1640,7 @@ void app_tab_complete(App *app, int dir)
 	Input *in = &app->input;
 	if (app->ncomp == 0) {
 		size_t start = in->cur;
-		while (start > 0 && in->text[start - 1] != ' ')
+		while (start > 0 && in->text[start - 1] != ' ' && in->text[start - 1] != '\n')
 			start--;
 		const char *prefix = in->text + start;
 		size_t plen = in->cur - start;

@@ -96,6 +96,7 @@ Messages:
 - `r` or `Enter` reply in its thread, `Esc` cancels the reply
 - `+` react: type an emoji name, `Tab` cycles matches, `Enter` sends, the same emoji again removes it
 - `Tab` completes @mentions
+- `Shift+Enter` (or `Alt+Enter`) starts a new line in the input, `Up` / `Down` move between its lines
 
 Commands: `/join #channel`, `/query user`, `/part`, `/win list`, `/server`, `/theme name|random`, `/quit`.
 

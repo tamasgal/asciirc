@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "util.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -70,7 +71,7 @@ int ui_init(void)
 	sigaction(SIGWINCH, &sa, NULL);
 
 	update_size();
-	const char *init = "\x1b[?1049h\x1b[?7l\x1b[H\x1b[2J";
+	const char *init = "\x1b[?1049h\x1b[?7l\x1b[>1u\x1b[>4;1m\x1b[H\x1b[2J";
 	write_all(init, strlen(init));
 	return 0;
 }
@@ -79,7 +80,7 @@ void ui_shutdown(void)
 {
 	if (!term_active)
 		return;
-	const char *fini = "\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l";
+	const char *fini = "\x1b[0m\x1b[?7h\x1b[?25h\x1b[<u\x1b[>4;0m\x1b[?1049l";
 	write_all(fini, strlen(fini));
 	tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
 	term_active = 0;
@@ -1298,10 +1299,56 @@ static int draw_goto(App *app, Buf *out, int row)
 	return draw_prompt(out, row, "goto", app->goto_text, hint);
 }
 
-static int draw_input(App *app, Buf *out, int row)
+static int prompt_mode(const App *app)
 {
+	return app->goto_active || app->react_active || app->sel_id || app->search_active || app->scroll_mode;
+}
+
+static int input_rows(const App *app)
+{
+	if (prompt_mode(app))
+		return 1;
+	int n = 1;
+	for (size_t i = 0; i < app->input.len; i++)
+		n += app->input.text[i] == '\n';
+	int max = (rows - 4) / 2;
+	if (max < 1)
+		max = 1;
+	return n < max ? n : max;
+}
+
+static int put_input_line(Buf *out, const char *s, size_t len, size_t cur, int avail)
+{
+	size_t start = cur;
+	int before = 0;
+	while (start > 0) {
+		size_t p = start - 1;
+		while (p > 0 && ((unsigned char)s[p] & 0xc0) == 0x80)
+			p--;
+		int cw = str_width(s + p, start - p);
+		if (before + cw > avail)
+			break;
+		before += cw;
+		start = p;
+	}
+	int used = before, cw;
+	size_t i = cur;
+	while (i < len) {
+		size_t l = next_char(s + i, len - i, &cw);
+		if (used + cw > avail)
+			break;
+		used += cw;
+		i += l;
+	}
+	buf_append(out, s + start, i - start);
+	return before;
+}
+
+static int draw_input(App *app, Buf *out, int top, int nrows, int *crow)
+{
+	*crow = top;
 	if (app->goto_active)
-		return draw_goto(app, out, row);
+		return draw_goto(app, out, top);
 	if (app->react_active) {
 		char hint[96];
 		if (app->react_n > 0)
@@ -1310,23 +1357,23 @@ static int draw_input(App *app, Buf *out, int row)
 			snprintf(hint, sizeof(hint), "-> :%s:", app->react_text);
 		else
 			snprintf(hint, sizeof(hint), "emoji name, Tab cycles, Enter reacts (again removes it), Esc cancels");
-		return draw_prompt(out, row, "react", app->react_text, hint);
+		return draw_prompt(out, top, "react", app->react_text, hint);
 	}
 	if (app->sel_id)
-		return draw_prompt(out, row, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
+		return draw_prompt(out, top, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
 	if (app->search_active)
-		return draw_prompt(out, row, "search", app->search_text,
+		return draw_prompt(out, top, "search", app->search_text,
 				   app->search_failed ? "no match" : "type to search older lines, Enter keeps, Esc cancels");
 	if (app->scroll_mode) {
 		char text[72];
 		snprintf(text, sizeof(text), "%s%s", app->search_text[0] ? "/" : "", app->search_text);
-		return draw_prompt(out, row, "scroll", text,
+		return draw_prompt(out, top, "scroll", text,
 				   app->search_failed ? "no more matches"
 				   : "j/k line, ^U/^D half page, ^B/^F page, g/G top/bottom, / search, n/N older/newer, q quits");
 	}
 	Window *w = app->wins[app->cur];
 	Input *in = &app->input;
-	buf_printf(out, "\x1b[%d;1H", row);
+	buf_printf(out, "\x1b[%d;1H", top);
 	style(out, NULL);
 	buf_putc(out, '[');
 	int pw = 1 + put_trunc(out, win_label(w), cols / 3);
@@ -1342,30 +1389,41 @@ static int draw_input(App *app, Buf *out, int row)
 	int avail = cols - pw - 1;
 	if (avail < 1)
 		avail = 1;
-	size_t start = in->cur;
-	int before = 0;
-	while (start > 0) {
-		size_t p = start - 1;
-		while (p > 0 && ((unsigned char)in->text[p] & 0xc0) == 0x80)
-			p--;
-		int cw = str_width(in->text + p, start - p);
-		if (before + cw > avail)
-			break;
-		before += cw;
-		start = p;
+	int nl = 1, cl = 0;
+	for (size_t i = 0; i < in->len; i++) {
+		if (in->text[i] == '\n') {
+			nl++;
+			if (i < in->cur)
+				cl++;
+		}
 	}
-	int used = before, cw;
-	size_t i = in->cur;
-	while (i < in->len) {
-		size_t l = next_char(in->text + i, in->len - i, &cw);
-		if (used + cw > avail)
-			break;
-		used += cw;
-		i += l;
+	int first = nl - nrows;
+	if (first > cl)
+		first = cl;
+	int col = pw + 1;
+	size_t pos = 0;
+	for (int li = 0; li < nl && li < first + nrows; li++) {
+		size_t end = pos;
+		while (end < in->len && in->text[end] != '\n')
+			end++;
+		if (li >= first) {
+			int r = top + li - first;
+			if (r != top) {
+				buf_printf(out, "\x1b[%d;1H", r);
+				style(out, NULL);
+				buf_printf(out, "%*s", pw, "");
+			}
+			int cur = li == cl;
+			int before = put_input_line(out, in->text + pos, end - pos, cur ? in->cur - pos : 0, avail);
+			buf_puts(out, "\x1b[K");
+			if (cur) {
+				*crow = r;
+				col = pw + before + 1;
+			}
+		}
+		pos = end + 1;
 	}
-	buf_append(out, in->text + start, i - start);
-	buf_puts(out, "\x1b[K");
-	return pw + before + 1;
+	return col;
 }
 
 void ui_draw(App *app)
@@ -1389,12 +1447,39 @@ void ui_draw(App *app)
 	draw_bar(&out, 1, top.data, tw);
 	buf_free(&top);
 
-	draw_messages(w, app->sel_id, app->scroll_mode ? app->search_hit : 0, &app->search_reveal, &out, 2, rows - 3);
-	draw_status(app, &out, rows - 1);
-	int col = draw_input(app, &out, rows);
-	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", rows, col);
+	int nin = input_rows(app);
+	draw_messages(w, app->sel_id, app->scroll_mode ? app->search_hit : 0, &app->search_reveal, &out, 2, rows - 2 - nin);
+	draw_status(app, &out, rows - nin);
+	int crow;
+	int col = draw_input(app, &out, rows - nin + 1, nin, &crow);
+	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", crow, col);
 	write_all(out.data, out.len);
 	buf_free(&out);
+}
+
+/* CSI u (kitty keyboard protocol) and CSI 27;mods;code ~ (xterm modifyOtherKeys) */
+static void modified_key(Key *k, int code, int mods)
+{
+	int shift = mods & 1, alt = mods & 2, ctrl = mods & 4;
+	if (code == 13)
+		k->type = mods ? K_NEWLINE : K_ENTER;
+	else if (code == 27)
+		k->type = K_ESC;
+	else if (code == 9)
+		k->type = shift ? K_BTAB : K_TAB;
+	else if (code == 127 || code == 8)
+		k->type = K_BACKSPACE;
+	else if (ctrl && code < 128 && isalpha(code)) {
+		k->type = K_CTRL;
+		k->c = tolower(code);
+	} else if (alt && code > 0x20 && code < 0x7f) {
+		k->type = K_ALT;
+		k->c = code;
+	} else if (!ctrl && !alt && code >= 0x20 && code < 0x7f) {
+		k->type = K_CHAR;
+		k->utf8[0] = (char)code;
+		k->utf8[1] = '\0';
+	}
 }
 
 size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
@@ -1414,13 +1499,18 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 			}
 			if (p[i + 1] == '[') {
 				size_t j = i + 2;
-				int param = 0;
-				int got_param = 0;
-				while (j < n && ((p[j] >= '0' && p[j] <= '9') || p[j] == ';')) {
-					if (p[j] != ';' && !got_param)
-						param = param * 10 + (p[j] - '0');
-					else
-						got_param = 1;
+				int prm[4] = {0, 0, 0, 0};
+				int np = 0, sub = 0;
+				while (j < n && ((p[j] >= '0' && p[j] <= '9') || p[j] == ';' || p[j] == ':')) {
+					if (p[j] == ';') {
+						if (np < 3)
+							np++;
+						sub = 0;
+					} else if (p[j] == ':') {
+						sub = 1;
+					} else if (!sub && prm[np] < 100000) {
+						prm[np] = prm[np] * 10 + (p[j] - '0');
+					}
 					j++;
 				}
 				if (j >= n) {
@@ -1435,13 +1525,17 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 				case 'H': k.type = K_HOME; break;
 				case 'F': k.type = K_END; break;
 				case 'Z': k.type = K_BTAB; break;
+				case 'u':
+					modified_key(&k, prm[0], prm[1] > 0 ? prm[1] - 1 : 0);
+					break;
 				case '~':
-					switch (param) {
+					switch (prm[0]) {
 					case 1: case 7: k.type = K_HOME; break;
 					case 4: case 8: k.type = K_END; break;
 					case 3: k.type = K_DELETE; break;
 					case 5: k.type = K_PGUP; break;
 					case 6: k.type = K_PGDN; break;
+					case 27: modified_key(&k, prm[2], prm[1] > 0 ? prm[1] - 1 : 0); break;
 					default: break;
 					}
 					break;
@@ -1460,6 +1554,9 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 				default: break;
 				}
 				i += 3;
+			} else if (p[i + 1] == '\r' || p[i + 1] == '\n') {
+				k.type = K_NEWLINE;
+				i += 2;
 			} else {
 				k.type = K_ALT;
 				k.c = p[i + 1];
@@ -1531,6 +1628,48 @@ static void delete_range(Input *in, size_t a, size_t b)
 		in->cur = a;
 }
 
+static size_t line_start(const Input *in, size_t pos)
+{
+	while (pos > 0 && in->text[pos - 1] != '\n')
+		pos--;
+	return pos;
+}
+
+static size_t line_end(const Input *in, size_t pos)
+{
+	while (pos < in->len && in->text[pos] != '\n')
+		pos++;
+	return pos;
+}
+
+static void insert(Input *in, const char *s, size_t n)
+{
+	if (in->len + n >= INPUT_MAX)
+		return;
+	memmove(in->text + in->cur + n, in->text + in->cur, in->len - in->cur);
+	memcpy(in->text + in->cur, s, n);
+	in->len += n;
+	in->cur += n;
+	in->text[in->len] = '\0';
+}
+
+static void line_move(Input *in, int dir)
+{
+	size_t ls = line_start(in, in->cur);
+	int col = str_width(in->text + ls, in->cur - ls);
+	size_t p = dir < 0 ? line_start(in, ls - 1) : line_end(in, in->cur) + 1;
+	size_t end = line_end(in, p);
+	int w = 0, cw;
+	while (p < end) {
+		size_t l = next_char(in->text + p, end - p, &cw);
+		if (w + cw > col)
+			break;
+		w += cw;
+		p += l;
+	}
+	in->cur = p;
+}
+
 void ui_input_set(Input *in, const char *s)
 {
 	size_t n = strlen(s);
@@ -1577,17 +1716,12 @@ static void history_move(Input *in, int dir)
 int ui_input_key(Input *in, const Key *k)
 {
 	switch (k->type) {
-	case K_CHAR: {
-		size_t n = strlen(k->utf8);
-		if (in->len + n >= INPUT_MAX)
-			return 1;
-		memmove(in->text + in->cur + n, in->text + in->cur, in->len - in->cur);
-		memcpy(in->text + in->cur, k->utf8, n);
-		in->len += n;
-		in->cur += n;
-		in->text[in->len] = '\0';
+	case K_CHAR:
+		insert(in, k->utf8, strlen(k->utf8));
 		return 1;
-	}
+	case K_NEWLINE:
+		insert(in, "\n", 1);
+		return 1;
 	case K_BACKSPACE:
 		delete_range(in, prev_pos(in, in->cur), in->cur);
 		return 1;
@@ -1601,31 +1735,45 @@ int ui_input_key(Input *in, const Key *k)
 		in->cur = next_pos(in, in->cur);
 		return 1;
 	case K_HOME:
-		in->cur = 0;
+		in->cur = line_start(in, in->cur);
 		return 1;
 	case K_END:
-		in->cur = in->len;
+		in->cur = line_end(in, in->cur);
 		return 1;
 	case K_UP:
-		history_move(in, -1);
+		if (line_start(in, in->cur) > 0)
+			line_move(in, -1);
+		else
+			history_move(in, -1);
 		return 1;
 	case K_DOWN:
-		history_move(in, 1);
+		if (line_end(in, in->cur) < in->len)
+			line_move(in, 1);
+		else
+			history_move(in, 1);
 		return 1;
 	case K_CTRL:
 		switch (k->c) {
-		case 'a': in->cur = 0; return 1;
-		case 'e': in->cur = in->len; return 1;
+		case 'a': in->cur = line_start(in, in->cur); return 1;
+		case 'e': in->cur = line_end(in, in->cur); return 1;
 		case 'b': in->cur = prev_pos(in, in->cur); return 1;
 		case 'f': in->cur = next_pos(in, in->cur); return 1;
 		case 'd': delete_range(in, in->cur, next_pos(in, in->cur)); return 1;
-		case 'k': delete_range(in, in->cur, in->len); return 1;
-		case 'u': delete_range(in, 0, in->cur); return 1;
+		case 'k': {
+			size_t e = line_end(in, in->cur);
+			delete_range(in, in->cur, e > in->cur ? e : next_pos(in, in->cur));
+			return 1;
+		}
+		case 'u': {
+			size_t b = line_start(in, in->cur);
+			delete_range(in, b < in->cur ? b : prev_pos(in, in->cur), in->cur);
+			return 1;
+		}
 		case 'w': {
 			size_t p = in->cur;
-			while (p > 0 && in->text[p - 1] == ' ')
+			while (p > 0 && (in->text[p - 1] == ' ' || in->text[p - 1] == '\n'))
 				p--;
-			while (p > 0 && in->text[p - 1] != ' ')
+			while (p > 0 && in->text[p - 1] != ' ' && in->text[p - 1] != '\n')
 				p--;
 			delete_range(in, p, in->cur);
 			return 1;
