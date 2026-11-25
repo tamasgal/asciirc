@@ -159,16 +159,21 @@ static void win_append(App *app, Window *w, Line *ln, int notify)
 	app->dirty = 1;
 }
 
-static void add_text(App *app, Window *w, LineKind kind, const char *fmt, va_list ap)
+static void add_raw(App *app, Window *w, LineKind kind, const char *text)
 {
-	char tmp[4096];
-	vsnprintf(tmp, sizeof(tmp), fmt, ap);
 	Line ln;
 	memset(&ln, 0, sizeof(ln));
 	ln.ts = time(NULL);
 	ln.kind = kind;
-	ln.text = ui_sanitize(tmp);
+	ln.text = ui_sanitize(text);
 	win_append(app, w ? w : app->wins[0], &ln, 0);
+}
+
+static void add_text(App *app, Window *w, LineKind kind, const char *fmt, va_list ap)
+{
+	char tmp[4096];
+	vsnprintf(tmp, sizeof(tmp), fmt, ap);
+	add_raw(app, w, kind, tmp);
 }
 
 void app_info(App *app, Window *w, const char *fmt, ...)
@@ -911,13 +916,25 @@ static void on_ready(void *ctx)
 	srv->ever_ready = 1;
 }
 
+static void names_result(App *app, Window *w, const Json *result);
+
 static void on_result(void *ctx, unsigned id, const Json *result, const char *error)
 {
 	Server *srv = ctx;
 	App *app = srv->app;
 	for (size_t i = 0; i < app->nwins; i++) {
 		Window *w = app->wins[i];
-		if (w->srv != srv || w->history_call != id)
+		if (w->srv != srv || !id)
+			continue;
+		if (w->names_call == id) {
+			w->names_call = 0;
+			if (error)
+				app_error(app, w, "Could not list users: %s", error);
+			else
+				names_result(app, w, result);
+			return;
+		}
+		if (w->history_call != id)
 			continue;
 		w->history_call = 0;
 		if (error)
@@ -1379,6 +1396,77 @@ static void cmd_list(App *app, const char *arg)
 	json_free(j);
 }
 
+#define NAMES_PAGE 100
+#define NAMES_MAX_PAGES 50
+
+static size_t names_append(App *app, Buf *out, const Json *users)
+{
+	size_t n = 0;
+	for (size_t i = 0; i < json_len(users); i++) {
+		const char *u = json_get_str(json_at(users, i), "username");
+		const char *name = json_get_str(json_at(users, i), "name");
+		const char *st = json_get_str(json_at(users, i), "status");
+		if (!u)
+			continue;
+		buf_printf(out, "[%s%s", st && strcmp(st, "online") == 0 ? "+" : " ", u);
+		if (!app->show_usernames && name && *name && strcmp(name, u) != 0)
+			buf_printf(out, " (%s)", name);
+		buf_puts(out, "] ");
+		n++;
+	}
+	return n;
+}
+
+static void names_show(App *app, Window *w, const Buf *list, size_t n, int total)
+{
+	Buf out;
+	buf_init(&out);
+	buf_printf(&out, "Users in %s (%d): %s", w->name, total > (int)n ? total : (int)n, list->data ? list->data : "");
+	add_raw(app, w, LINE_INFO, out.data);
+	buf_free(&out);
+}
+
+static void names_result(App *app, Window *w, const Json *result)
+{
+	const Json *users = json_get(result, "records");
+	Buf list;
+	buf_init(&list);
+	size_t n = names_append(app, &list, users);
+	names_show(app, w, &list, n, (int)json_num(json_get(result, "total"), (double)n));
+	buf_free(&list);
+}
+
+static void names_rest(App *app, Window *w, const char *ep)
+{
+	Buf list;
+	buf_init(&list);
+	size_t n = 0;
+	int total = 0;
+	for (int page = 0; page < NAMES_MAX_PAGES; page++) {
+		Buf path;
+		buf_init(&path);
+		buf_printf(&path, "/api/v1/%s.members?count=%d&offset=%zu&roomId=", ep, NAMES_PAGE, n);
+		url_encode(&path, w->rid);
+		Err e;
+		Json *j = rc_get(&w->srv->rc, path.data, e.err, sizeof(e.err));
+		buf_free(&path);
+		if (!j) {
+			app_error(app, w, "%s", e.err);
+			buf_free(&list);
+			return;
+		}
+		const Json *members = json_get(j, "members");
+		size_t got = json_len(members);
+		n += names_append(app, &list, members);
+		total = (int)json_num(json_get(j, "total"), (double)n);
+		json_free(j);
+		if (got == 0 || n >= (size_t)total)
+			break;
+	}
+	names_show(app, w, &list, n, total);
+	buf_free(&list);
+}
+
 static void cmd_names(App *app)
 {
 	Window *w = current(app);
@@ -1387,30 +1475,93 @@ static void cmd_names(App *app)
 		app_error(app, w, "Not in a room");
 		return;
 	}
+	Buf params;
+	buf_init(&params);
+	buf_puts(&params, "[");
+	buf_json_str(&params, w->rid);
+	buf_puts(&params, ",true,{\"limit\":0,\"skip\":0},\"\"]");
+	w->names_call = rc_ddp_call(&w->srv->rc, "getUsersOfRoom", params.data);
+	buf_free(&params);
+	if (!w->names_call)
+		names_rest(app, w, ep);
+}
+
+static void whois_time(App *app, Window *w, const char *label, const char *iso)
+{
+	time_t t = parse_iso8601(iso);
+	if (!t)
+		return;
+	char s[32];
+	struct tm tm;
+	localtime_r(&t, &tm);
+	strftime(s, sizeof(s), "%Y-%m-%d %H:%M", &tm);
+	app_info(app, w, " %-11s: %s", label, s);
+}
+
+static void cmd_whois(App *app, const char *arg)
+{
+	Window *w = current(app);
+	if (*arg == '@')
+		arg++;
+	if (!*arg) {
+		if (w->type == 'd' && w->name)
+			arg = w->name;
+		else {
+			app_error(app, w, "Usage: /whois user");
+			return;
+		}
+	}
 	Buf path;
 	buf_init(&path);
-	buf_printf(&path, "/api/v1/%s.members?count=500&roomId=", ep);
-	url_encode(&path, w->rid);
+	buf_puts(&path, "/api/v1/users.info?username=");
+	url_encode(&path, arg);
 	Err e;
-	Json *j = rc_get(&w->srv->rc, path.data, e.err, sizeof(e.err));
+	Json *j = rc_get(&cur_srv(app)->rc, path.data, e.err, sizeof(e.err));
 	buf_free(&path);
 	if (!j) {
-		app_error(app, w, "%s", e.err);
+		app_error(app, w, "%s: %s", arg, e.err);
 		return;
 	}
-	const Json *members = json_get(j, "members");
-	Buf out;
-	buf_init(&out);
-	for (size_t i = 0; i < json_len(members); i++) {
-		const char *u = json_get_str(json_at(members, i), "username");
-		const char *st = json_get_str(json_at(members, i), "status");
-		if (!u)
-			continue;
-		buf_printf(&out, "[%s%s] ", st && strcmp(st, "online") == 0 ? "+" : " ", u);
+	const Json *u = json_get(j, "user");
+	const char *user = json_get_str(u, "username");
+	const char *name = json_get_str(u, "name");
+	app_info(app, w, "%s [%s]", user ? user : arg, name ? name : "");
+	const char *nick = json_get_str(u, "nickname");
+	if (nick && *nick)
+		app_info(app, w, " %-11s: %s", "nickname", nick);
+	const char *st = json_get_str(u, "status");
+	const char *st_text = json_get_str(u, "statusText");
+	const Json *active = json_get(u, "active");
+	if (active && !json_bool(active))
+		app_info(app, w, " %-11s: deactivated", "status");
+	else if (st)
+		app_info(app, w, " %-11s: %s%s%s%s", "status", st, st_text && *st_text ? " (" : "",
+			 st_text && *st_text ? st_text : "", st_text && *st_text ? ")" : "");
+	const char *bio = json_get_str(u, "bio");
+	if (bio && *bio)
+		app_info(app, w, " %-11s: %s", "bio", bio);
+	const Json *roles = json_get(u, "roles");
+	if (json_len(roles)) {
+		Buf r;
+		buf_init(&r);
+		for (size_t i = 0; i < json_len(roles); i++)
+			buf_printf(&r, "%s%s", i ? ", " : "", json_str(json_at(roles, i)) ? json_str(json_at(roles, i)) : "?");
+		app_info(app, w, " %-11s: %s", "roles", r.data);
+		buf_free(&r);
 	}
-	app_info(app, w, "Users in %s (%d): %s", w->name, (int)json_num(json_get(j, "total"), (double)json_len(members)),
-		 out.data ? out.data : "");
-	buf_free(&out);
+	const Json *off = json_get(u, "utcOffset");
+	if (off) {
+		double h = json_num(off, 0);
+		time_t t = time(NULL) + (time_t)(h * 3600);
+		struct tm tm;
+		char s[32];
+		gmtime_r(&t, &tm);
+		strftime(s, sizeof(s), "%a %H:%M", &tm);
+		app_info(app, w, " %-11s: %s (UTC%+g)", "local time", s, h);
+	}
+	whois_time(app, w, "last login", json_get_str(u, "lastLogin"));
+	whois_time(app, w, "created", json_get_str(u, "createdAt"));
+	app_info(app, w, "End of WHOIS");
 	json_free(j);
 }
 
@@ -1502,7 +1653,8 @@ static void cmd_help(App *app)
 		"/window n|next|prev     switch window, /window list shows all",
 		"/list [filter]          list public channels",
 		"/names                  list members of the current room",
-		"/topic [text]           show or set the topic",
+		"/whois [user]           show information about a user",
+		"/topic [text]          show or set the topic",
 		"/clear                  clear the current window",
 		"/theme [name|random]    list themes or switch to one",
 		"/reconnect              reconnect the realtime connection",
@@ -1549,6 +1701,8 @@ static void run_command(App *app, const char *line)
 		cmd_list(app, arg);
 	else if (strcmp(cmd, "names") == 0 || strcmp(cmd, "who") == 0)
 		cmd_names(app);
+	else if (strcmp(cmd, "whois") == 0 || strcmp(cmd, "wi") == 0)
+		cmd_whois(app, arg);
 	else if (strcmp(cmd, "topic") == 0)
 		cmd_topic(app, arg);
 	else if (strcmp(cmd, "theme") == 0)

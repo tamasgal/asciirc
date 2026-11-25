@@ -40,8 +40,12 @@ static Json *rc_request(Rc *rc, const char *method, const char *path, const char
 	HttpResponse resp;
 	int r = http_request(&rc->url, method, path, h.data, body, &resp, err, errlen);
 	buf_free(&h);
-	if (r < 0)
+	if (r < 0) {
+		char tmp[256];
+		snprintf(tmp, sizeof(tmp), "%s", err);
+		snprintf(err, errlen, "%.*s: %s", (int)strcspn(path, "?"), path, tmp);
 		return NULL;
+	}
 
 	Json *j = json_parse(resp.body.data ? resp.body.data : "", resp.body.len);
 	if (resp.status < 200 || resp.status >= 300 || !j ||
