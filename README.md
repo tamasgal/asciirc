@@ -97,8 +97,14 @@ Messages:
 - `+` react: type an emoji name, `Tab` cycles matches, `Enter` sends, the same emoji again removes it
 - `Tab` completes @mentions
 - `Ctrl+O` (or `Ctrl+M` in terminals with the kitty keyboard protocol) opens the input in `$EDITOR` (default `vi`) to write a longer message. Save and quit to put it into the input, `Enter` sends it. Quitting without saving keeps the input as it was
+- Pasted text with several lines stays in the input (newlines show as `^J`) and is sent as one message
 
-Commands: `/join #channel`, `/query user`, `/part`, `/names`, `/whois user`, `/win list`, `/server`, `/theme name|random`, `/quit`.
+Files:
+
+- `/upload file... [description]` uploads files to the current room, or to the thread of a selected reply. `Tab` completes paths
+- Dropping a file on the terminal (Terminal.app, iTerm2, Ghostty, kitty and others that support bracketed paste) asks `Upload file to #room? y/n`. If the input already starts with `/upload`, the dropped path is inserted instead, so a description can follow
+
+Commands: `/join #channel`, `/query user`, `/part`, `/names`, `/whois user`, `/win list`, `/server`, `/theme name|random`, `/upload file`, `/quit`.
 
 ## License
 
