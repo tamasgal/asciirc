@@ -21,7 +21,9 @@ typedef enum {
 	K_PGDN,
 	K_CTRL,
 	K_ALT,
-	K_ESC
+	K_ESC,
+	K_PASTE_START,
+	K_PASTE_END
 } KeyType;
 
 typedef struct {

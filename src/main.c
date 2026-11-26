@@ -257,15 +257,67 @@ static void compose(App *app)
 	free(text);
 }
 
+static int prompt_active(const App *app)
+{
+	return app->goto_active || app->react_active || app->sel_id || app->scroll_mode || app->upload_n;
+}
+
+static void handle_key(App *app, const Key *k);
+
+static void end_paste(App *app)
+{
+	char *text = app->paste.data ? app->paste.data : "";
+	app->pasting = 0;
+	if (prompt_active(app)) {
+		Key keys[512];
+		size_t nk = ui_parse_keys(text, strlen(text), keys, sizeof(keys) / sizeof(keys[0]));
+		for (size_t i = 0; i < nk; i++)
+			if (keys[i].type == K_CHAR)
+				handle_key(app, &keys[i]);
+	} else {
+		app_paste(app, text);
+	}
+	buf_free(&app->paste);
+	app->dirty = 1;
+}
+
+static void add_paste(App *app, const Key *k)
+{
+	if (app->paste.len > 4 * INPUT_MAX)
+		return;
+	if (k->type == K_CHAR)
+		buf_puts(&app->paste, k->utf8);
+	else if (k->type == K_ENTER || (k->type == K_CTRL && k->c == 'j'))
+		buf_putc(&app->paste, '\n');
+	else if (k->type == K_TAB)
+		buf_putc(&app->paste, '\t');
+}
+
 static void handle_key(App *app, const Key *k)
 {
 	Window *w = app->wins[app->cur];
+	if (k->type == K_PASTE_START) {
+		buf_free(&app->paste);
+		app->pasting = 1;
+		return;
+	}
+	if (app->pasting) {
+		if (k->type == K_PASTE_END)
+			end_paste(app);
+		else
+			add_paste(app, k);
+		return;
+	}
+	if (app->upload_n) {
+		app_upload_answer(app, k->type == K_CHAR && (strcmp(k->utf8, "y") == 0 || strcmp(k->utf8, "Y") == 0));
+		return;
+	}
 	int page = (ui_rows() - 3) / 2;
 	if (page < 1)
 		page = 1;
 	if (k->type != K_TAB && k->type != K_BTAB)
 		app_tab_reset(app);
-	if (app->goto_active || app->react_active || app->sel_id || app->scroll_mode) {
+	if (prompt_active(app)) {
 		if (app->goto_active)
 			handle_goto_key(app, k);
 		else if (app->react_active)
@@ -356,8 +408,30 @@ static void handle_key(App *app, const Key *k)
 	app->dirty = 1;
 }
 
+/* bytes at the end of a read that start a CSI sequence or UTF-8 character
+   continuing in the next read, a lone ESC is a key press and not held back */
+static size_t incomplete_tail(const char *buf, size_t n)
+{
+	size_t q = n;
+	while (q > 0 && n - q < 3 && ((unsigned char)buf[q - 1] & 0xc0) == 0x80)
+		q--;
+	if (q > 0 && (unsigned char)buf[q - 1] >= 0xc0) {
+		unsigned char c = (unsigned char)buf[q - 1];
+		size_t need = (c & 0xe0) == 0xc0 ? 2 : (c & 0xf0) == 0xe0 ? 3 : 4;
+		return n - (q - 1) < need ? n - (q - 1) : 0;
+	}
+	q = n;
+	while (q > 0 && n - q < 32 && ((buf[q - 1] >= '0' && buf[q - 1] <= '9') || buf[q - 1] == ';' || buf[q - 1] == ':'))
+		q--;
+	if (q >= 2 && buf[q - 1] == '[' && buf[q - 2] == 0x1b)
+		return n - (q - 2);
+	return 0;
+}
+
 static int run(App *app)
 {
+	static char inbuf[16384];
+	size_t inlen = 0;
 	struct pollfd *fds = xcalloc(app->nservers + 1, sizeof(*fds));
 	Server **owner = xcalloc(app->nservers + 1, sizeof(*owner));
 	int ret = 0;
@@ -391,12 +465,15 @@ static int run(App *app)
 		if (ui_check_resize())
 			app->dirty = 1;
 		if (r > 0 && (fds[0].revents & (POLLIN | POLLHUP))) {
-			char buf[4096];
-			ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
+			ssize_t n = read(STDIN_FILENO, inbuf + inlen, sizeof(inbuf) - inlen);
 			if (n <= 0)
 				break;
-			Key keys[512];
-			size_t nk = ui_parse_keys(buf, (size_t)n, keys, sizeof(keys) / sizeof(keys[0]));
+			size_t total = inlen + (size_t)n;
+			size_t keep = incomplete_tail(inbuf, total);
+			Key keys[4096];
+			size_t nk = ui_parse_keys(inbuf, total - keep, keys, sizeof(keys) / sizeof(keys[0]));
+			memmove(inbuf, inbuf + total - keep, keep);
+			inlen = keep;
 			for (size_t i = 0; i < nk && !app->quit; i++)
 				handle_key(app, &keys[i]);
 		}

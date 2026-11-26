@@ -10,7 +10,7 @@ typedef struct {
 } HttpResponse;
 
 int http_request(const Url *u, const char *method, const char *path, const char *extra_headers,
-		 const char *json_body, HttpResponse *resp, char *err, size_t errlen);
+		 const char *ctype, const char *body, size_t body_len, HttpResponse *resp, char *err, size_t errlen);
 void http_response_free(HttpResponse *resp);
 
 void url_encode(Buf *b, const char *s);

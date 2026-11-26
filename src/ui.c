@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "files.h"
 #include "util.h"
 
 #include <ctype.h>
@@ -49,8 +50,8 @@ static void write_all(const char *s, size_t n)
 	}
 }
 
-static const char term_init[] = "\x1b[?1049h\x1b[?7l\x1b[>1u\x1b[>4;1m\x1b[H\x1b[2J";
-static const char term_fini[] = "\x1b[0m\x1b[?7h\x1b[?25h\x1b[<u\x1b[>4;0m\x1b[?1049l";
+static const char term_init[] = "\x1b[?1049h\x1b[?7l\x1b[?2004h\x1b[>1u\x1b[>4;1m\x1b[H\x1b[2J";
+static const char term_fini[] = "\x1b[0m\x1b[?7h\x1b[?2004l\x1b[?25h\x1b[<u\x1b[>4;0m\x1b[?1049l";
 
 static int enter_raw(void)
 {
@@ -1470,6 +1471,17 @@ static int draw_input(App *app, Buf *out, int row)
 			snprintf(hint, sizeof(hint), "emoji name, Tab cycles, Enter reacts (again removes it), Esc cancels");
 		return draw_prompt(out, row, "react", app->react_text, hint);
 	}
+	if (app->upload_n) {
+		char hint[256];
+		char *name = ui_sanitize(path_base(app->upload_paths[0]));
+		if (app->upload_n == 1)
+			snprintf(hint, sizeof(hint), "Upload %s to %s? y/n", name, win_label(app->wins[app->cur]));
+		else
+			snprintf(hint, sizeof(hint), "Upload %s and %zu more to %s? y/n", name, app->upload_n - 1,
+				 win_label(app->wins[app->cur]));
+		free(name);
+		return draw_prompt(out, row, "upload", "", hint);
+	}
 	if (app->sel_id)
 		return draw_prompt(out, row, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
 	if (app->search_active)
@@ -1613,6 +1625,8 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 					case 5: k.type = K_PGUP; break;
 					case 6: k.type = K_PGDN; break;
 					case 27: modified_key(&k, prm[2], prm[1] > 0 ? prm[1] - 1 : 0); break;
+					case 200: k.type = K_PASTE_START; break;
+					case 201: k.type = K_PASTE_END; break;
 					default: break;
 					}
 					break;

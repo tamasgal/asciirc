@@ -38,6 +38,17 @@ int rc_fetch_me(Rc *rc, char *err, size_t errlen);
 Json *rc_get(Rc *rc, const char *path, char *err, size_t errlen);
 Json *rc_post(Rc *rc, const char *path, const char *body, char *err, size_t errlen);
 
+typedef struct {
+	const char *name;
+	const char *mime;
+	const char *data;
+	size_t len;
+} RcFile;
+
+void rc_multipart(Buf *b, const char *boundary, const RcFile *f, const char *desc, const char *tmid);
+Json *rc_upload(Rc *rc, const char *rid, const RcFile *f, const char *desc, const char *tmid, char *err,
+		size_t errlen);
+
 int rc_ddp_connect(Rc *rc, char *err, size_t errlen);
 void rc_ddp_disconnect(Rc *rc);
 int rc_ddp_fd(const Rc *rc);

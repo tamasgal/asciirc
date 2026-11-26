@@ -1,4 +1,5 @@
 #include "app.h"
+#include "files.h"
 #include "http.h"
 #include "ui.h"
 #include "util.h"
@@ -8,10 +9,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define MAX_LINES 5000
 #define HISTORY_COUNT 50
 #define RECONNECT_MAX 60
+#define UPLOAD_MAX (100L * 1024 * 1024)
 
 typedef struct {
 	char err[512];
@@ -91,8 +94,16 @@ static Server *cur_srv(App *app)
 
 static void load_history(App *app, Window *w);
 
+static void upload_cancel(App *app)
+{
+	path_list_free(app->upload_paths, app->upload_n);
+	app->upload_paths = NULL;
+	app->upload_n = 0;
+}
+
 static void reset_modes(App *app)
 {
+	upload_cancel(app);
 	free(app->sel_id);
 	app->sel_id = NULL;
 	free(app->reply_tmid);
@@ -1025,6 +1036,11 @@ void app_init(App *app)
 	app->search_hit = 0;
 	app->search_reveal = 0;
 	app->search_failed = 0;
+	app->comp_paths = 0;
+	app->pasting = 0;
+	buf_init(&app->paste);
+	app->upload_paths = NULL;
+	app->upload_n = 0;
 	Window *st = win_new(app, NULL, NULL, "(status)", 0);
 	st->history_loaded = 1;
 }
@@ -1054,6 +1070,8 @@ void app_free(App *app)
 	free(app->reply_tmid);
 	free(app->reply_to);
 	free(app->react_list);
+	upload_cancel(app);
+	buf_free(&app->paste);
 	for (int i = 0; i < app->input.nhistory; i++)
 		free(app->input.history[i]);
 }
@@ -1133,6 +1151,186 @@ static int send_text(App *app, Window *w, const char *text)
 	if (reply)
 		app_reply_cancel(app);
 	return 0;
+}
+
+static int read_whole(const char *path, Buf *b, char *err, size_t errlen)
+{
+	struct stat st;
+	if (stat(path, &st) < 0 || !S_ISREG(st.st_mode)) {
+		snprintf(err, errlen, "no such file");
+		return -1;
+	}
+	if (st.st_size > UPLOAD_MAX) {
+		snprintf(err, errlen, "larger than %ld MB", UPLOAD_MAX / 1024 / 1024);
+		return -1;
+	}
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		snprintf(err, errlen, "cannot open it");
+		return -1;
+	}
+	char tmp[65536];
+	size_t n;
+	while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0 && b->len <= UPLOAD_MAX)
+		buf_append(b, tmp, n);
+	int bad = ferror(f) || b->len > UPLOAD_MAX;
+	fclose(f);
+	if (bad) {
+		snprintf(err, errlen, "cannot read it");
+		return -1;
+	}
+	return 0;
+}
+
+static void upload_files(App *app, Window *w, char **paths, size_t n, const char *desc)
+{
+	if (!w->rid) {
+		app_error(app, w, "Not in a room, use /join or /query, or switch windows with Ctrl+G");
+		return;
+	}
+	int reply = app->reply_tmid && w == current(app);
+	for (size_t i = 0; i < n; i++) {
+		const char *name = path_base(paths[i]);
+		char *shown = ui_sanitize(name);
+		Buf data;
+		buf_init(&data);
+		Err e;
+		if (read_whole(paths[i], &data, e.err, sizeof(e.err)) < 0) {
+			app_error(app, w, "Cannot upload %s: %s", shown, e.err);
+			buf_free(&data);
+			free(shown);
+			continue;
+		}
+		if (data.len >= 1024 * 1024)
+			app_info(app, w, "Uploading %s (%.1f MB)...", shown, data.len / 1048576.0);
+		else
+			app_info(app, w, "Uploading %s (%zu kB)...", shown, (data.len + 1023) / 1024);
+		ui_draw(app);
+		RcFile f = { name, mime_type(name), data.data ? data.data : "", data.len };
+		Json *j = rc_upload(&w->srv->rc, w->rid, &f, i == 0 ? desc : NULL, reply ? app->reply_tmid : NULL,
+				    e.err, sizeof(e.err));
+		buf_free(&data);
+		if (!j) {
+			app_error(app, w, "Upload of %s failed: %s", shown, e.err);
+		} else {
+			const Json *m = json_get(j, "message");
+			if (m)
+				add_message(app, w, m, 0);
+		}
+		json_free(j);
+		free(shown);
+	}
+	if (reply)
+		app_reply_cancel(app);
+	app->dirty = 1;
+}
+
+void app_upload_answer(App *app, int yes)
+{
+	char **paths = app->upload_paths;
+	size_t n = app->upload_n;
+	app->upload_paths = NULL;
+	app->upload_n = 0;
+	if (yes)
+		upload_files(app, current(app), paths, n, NULL);
+	path_list_free(paths, n);
+	app->dirty = 1;
+}
+
+static int is_upload_cmd(const char *s)
+{
+	return strncasecmp_ascii(s, "/upload", 7) == 0 && (s[7] == ' ' || s[7] == '\0');
+}
+
+static void input_insert(Input *in, const char *s, size_t n)
+{
+	if (in->len + n >= INPUT_MAX) {
+		n = INPUT_MAX - 1 - in->len;
+		while (n > 0 && ((unsigned char)s[n] & 0xc0) == 0x80)
+			n--;
+	}
+	memmove(in->text + in->cur + n, in->text + in->cur, in->len - in->cur);
+	memcpy(in->text + in->cur, s, n);
+	in->len += n;
+	in->cur += n;
+	in->text[in->len] = '\0';
+}
+
+void app_paste(App *app, const char *text)
+{
+	Input *in = &app->input;
+	char **paths;
+	size_t n = path_files(text, &paths);
+	Buf b;
+	buf_init(&b);
+	if (n > 0 && is_upload_cmd(in->text)) {
+		if (in->cur > 0 && in->text[in->cur - 1] != ' ')
+			buf_putc(&b, ' ');
+		for (size_t i = 0; i < n; i++) {
+			path_escape(&b, paths[i]);
+			buf_putc(&b, ' ');
+		}
+		path_list_free(paths, n);
+	} else if (n > 0) {
+		if (!current(app)->rid) {
+			app_error(app, current(app), "Not in a room, switch to one to upload files");
+			path_list_free(paths, n);
+		} else {
+			upload_cancel(app);
+			app->upload_paths = paths;
+			app->upload_n = n;
+		}
+	} else {
+		for (const char *p = text; *p; p++) {
+			if (*p == '\r' && p[1] == '\n')
+				continue;
+			if (*p == '\r' || *p == '\n')
+				buf_putc(&b, '\n');
+			else if (*p == '\t')
+				buf_putc(&b, ' ');
+			else if ((unsigned char)*p >= 0x20 && *p != 0x7f)
+				buf_putc(&b, *p);
+		}
+		while (b.len > 0 && b.data[b.len - 1] == '\n')
+			b.len--;
+	}
+	if (b.len > 0)
+		input_insert(in, b.data, b.len);
+	buf_free(&b);
+	app->dirty = 1;
+}
+
+static void cmd_upload(App *app, const char *arg)
+{
+	char **paths = NULL;
+	size_t n = 0;
+	const char *p = arg;
+	char *tok;
+	for (;;) {
+		const char *q = path_token(p, &tok);
+		if (!q)
+			break;
+		struct stat st;
+		if (stat(tok, &st) < 0 || !S_ISREG(st.st_mode)) {
+			if (n == 0) {
+				char *shown = ui_sanitize(tok);
+				app_error(app, current(app), "No such file: %s", shown);
+				free(shown);
+			}
+			free(tok);
+			break;
+		}
+		paths = xrealloc(paths, (n + 1) * sizeof(*paths));
+		paths[n++] = tok;
+		p = q;
+	}
+	if (n == 0 && !*arg)
+		app_error(app, current(app), "Usage: /upload file... [description], Tab completes paths");
+	while (*p == ' ')
+		p++;
+	if (n > 0)
+		upload_files(app, current(app), paths, n, p);
+	path_list_free(paths, n);
 }
 
 static void post_room_action(App *app, Window *w, const char *action, const char *extra_key, const char *extra_val)
@@ -1657,6 +1855,7 @@ static void cmd_help(App *app)
 		"/topic [text]          show or set the topic",
 		"/clear                  clear the current window",
 		"/theme [name|random]    list themes or switch to one",
+		"/upload file... [text]  upload files to the current room, Tab completes paths",
 		"/reconnect              reconnect the realtime connection",
 		"/server [name]          list servers, or pick the one for the status window",
 		"/quit                   exit",
@@ -1666,6 +1865,7 @@ static void cmd_help(App *app)
 		"      PgUp/PgDn or Ctrl+U/D scroll, Ctrl+K/J one line, Enter jumps back down,",
 		"      Ctrl+S scroll mode with vi keys and / search,",
 		"      Ctrl+O write the message in $EDITOR, Tab/Shift+Tab cycle @mentions,",
+		"      drop a file on the terminal to upload it,",
 		"      // sends a leading slash",
 	};
 	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
@@ -1721,6 +1921,8 @@ static void run_command(App *app, const char *line)
 		cmd_server(app, arg);
 	else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0)
 		app->quit = 1;
+	else if (strcmp(cmd, "upload") == 0)
+		cmd_upload(app, arg);
 	else if (strcmp(cmd, "help") == 0)
 		cmd_help(app);
 	else
@@ -1791,41 +1993,100 @@ static void build_completions(App *app, const char *prefix, size_t plen)
 	}
 }
 
+static int build_path_completions(App *app)
+{
+	Input *in = &app->input;
+	if (!is_upload_cmd(in->text) || in->cur < 8)
+		return 0;
+	char *head = xstrndup(in->text, in->cur);
+	const char *p = head + 7, *start = head + in->cur;
+	char *tok;
+	for (;;) {
+		while (*p == ' ')
+			p++;
+		if (!*p)
+			break;
+		const char *q = path_token(p, &tok);
+		free(tok);
+		if (!q || !*q) {
+			start = p;
+			break;
+		}
+		p = q;
+	}
+	char **list;
+	size_t n = path_complete(start, &list);
+	app->comp_start = (size_t)(start - head);
+	app->comp_len = in->cur - app->comp_start;
+	free(head);
+	if (n == 0)
+		return 1;
+	app->comp = list;
+	app->comp_names = xcalloc(n, sizeof(*app->comp_names));
+	for (size_t i = 0; i < n; i++) {
+		size_t b = strlen(list[i]);
+		if (b > 0 && list[i][b - 1] == '/')
+			b--;
+		while (b > 0 && list[i][b - 1] != '/')
+			b--;
+		app->comp_names[i] = xstrdup(list[i] + b);
+	}
+	app->ncomp = n;
+	app->comp_paths = 1;
+	return 1;
+}
+
 void app_tab_complete(App *app, int dir)
 {
 	Input *in = &app->input;
 	if (app->ncomp == 0) {
-		size_t start = in->cur;
-		while (start > 0 && in->text[start - 1] != ' ' && in->text[start - 1] != '\n')
-			start--;
-		const char *prefix = in->text + start;
-		size_t plen = in->cur - start;
-		size_t skip = plen > 0 && prefix[0] == '@';
-		if (plen == skip)
-			return;
-		build_completions(app, prefix + skip, plen - skip);
-		if (app->ncomp == 0)
-			return;
-		app->comp_start = start;
-		app->comp_len = plen;
+		if (build_path_completions(app)) {
+			if (app->ncomp == 0)
+				return;
+		} else {
+			size_t start = in->cur;
+			while (start > 0 && in->text[start - 1] != ' ' && in->text[start - 1] != '\n')
+				start--;
+			const char *prefix = in->text + start;
+			size_t plen = in->cur - start;
+			size_t skip = plen > 0 && prefix[0] == '@';
+			if (plen == skip)
+				return;
+			build_completions(app, prefix + skip, plen - skip);
+			if (app->ncomp == 0)
+				return;
+			app->comp_start = start;
+			app->comp_len = plen;
+			app->comp_paths = 0;
+		}
 		app->comp_idx = dir > 0 ? 0 : app->ncomp - 1;
 	} else {
 		app->comp_idx = (app->comp_idx + app->ncomp + (size_t)(dir > 0 ? 1 : -1)) % app->ncomp;
 	}
 
-	char completed[512];
-	snprintf(completed, sizeof(completed), "@%s ", app->comp[app->comp_idx]);
-	size_t clen = strlen(completed);
+	Buf c;
+	buf_init(&c);
+	const char *pick = app->comp[app->comp_idx];
+	if (app->comp_paths)
+		buf_printf(&c, "%s%s", pick, *pick && pick[strlen(pick) - 1] == '/' ? "" : " ");
+	else
+		buf_printf(&c, "@%s ", pick);
+	size_t clen = c.len;
 	size_t start = app->comp_start, end = start + app->comp_len;
-	if (end > in->len || in->len - app->comp_len + clen >= INPUT_MAX)
+	if (end > in->len || in->len - app->comp_len + clen >= INPUT_MAX) {
+		buf_free(&c);
 		return;
+	}
 	memmove(in->text + start + clen, in->text + end, in->len - end);
-	memcpy(in->text + start, completed, clen);
+	memcpy(in->text + start, c.data, clen);
+	buf_free(&c);
 	in->len = in->len - app->comp_len + clen;
 	in->cur = start + clen;
 	in->text[in->len] = '\0';
 	app->comp_len = clen;
 	app->dirty = 1;
+	if (app->comp_paths && app->ncomp == 1)
+		app_tab_reset(app);
 }
 
 static int str_icontains(const char *hay, const char *needle)

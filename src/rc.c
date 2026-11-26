@@ -2,6 +2,8 @@
 #include "http.h"
 #include "util.h"
 
+#include <openssl/rand.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,15 +33,17 @@ static void auth_headers(Rc *rc, Buf *h)
 		buf_printf(h, "X-User-Id: %s\r\nX-Auth-Token: %s\r\n", rc->user_id, rc->token);
 }
 
-static Json *rc_request(Rc *rc, const char *method, const char *path, const char *body, char *err,
-			size_t errlen)
+static Json *rc_request(Rc *rc, const char *method, const char *path, const char *ctype, const char *body,
+			size_t body_len, int *status, char *err, size_t errlen)
 {
 	Buf h;
 	buf_init(&h);
 	auth_headers(rc, &h);
 	HttpResponse resp;
-	int r = http_request(&rc->url, method, path, h.data, body, &resp, err, errlen);
+	int r = http_request(&rc->url, method, path, h.data, ctype, body, body_len, &resp, err, errlen);
 	buf_free(&h);
+	if (status)
+		*status = r < 0 ? 0 : resp.status;
 	if (r < 0) {
 		char tmp[256];
 		snprintf(tmp, sizeof(tmp), "%s", err);
@@ -68,12 +72,105 @@ static Json *rc_request(Rc *rc, const char *method, const char *path, const char
 
 Json *rc_get(Rc *rc, const char *path, char *err, size_t errlen)
 {
-	return rc_request(rc, "GET", path, NULL, err, errlen);
+	return rc_request(rc, "GET", path, NULL, NULL, 0, NULL, err, errlen);
 }
 
 Json *rc_post(Rc *rc, const char *path, const char *body, char *err, size_t errlen)
 {
-	return rc_request(rc, "POST", path, body ? body : "{}", err, errlen);
+	if (!body)
+		body = "{}";
+	return rc_request(rc, "POST", path, "application/json", body, strlen(body), NULL, err, errlen);
+}
+
+static void form_field(Buf *b, const char *boundary, const char *name, const char *value)
+{
+	buf_printf(b, "--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n", boundary, name, value);
+}
+
+void rc_multipart(Buf *b, const char *boundary, const RcFile *f, const char *desc, const char *tmid)
+{
+	buf_printf(b, "--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"", boundary);
+	for (const char *p = f->name; *p; p++)
+		buf_putc(b, *p == '"' || *p == '\r' || *p == '\n' || *p == '\\' ? '_' : *p);
+	buf_printf(b, "\"\r\nContent-Type: %s\r\n\r\n", f->mime);
+	buf_append(b, f->data, f->len);
+	buf_puts(b, "\r\n");
+	if (desc && *desc)
+		form_field(b, boundary, "description", desc);
+	if (tmid)
+		form_field(b, boundary, "tmid", tmid);
+	buf_printf(b, "--%s--\r\n", boundary);
+}
+
+static Json *post_multipart(Rc *rc, const char *path, const RcFile *f, const char *desc, const char *tmid,
+			    int *status, char *err, size_t errlen)
+{
+	unsigned char rnd[12];
+	char boundary[64] = "asciirc-";
+	if (RAND_bytes(rnd, sizeof(rnd)) != 1)
+		memset(rnd, 0x5a, sizeof(rnd));
+	for (size_t i = 0; i < sizeof(rnd); i++)
+		snprintf(boundary + 8 + 2 * i, 3, "%02x", rnd[i]);
+	Buf body, ctype;
+	buf_init(&body);
+	buf_init(&ctype);
+	rc_multipart(&body, boundary, f, desc, tmid);
+	buf_printf(&ctype, "multipart/form-data; boundary=%s", boundary);
+	Json *j = rc_request(rc, "POST", path, ctype.data, body.data, body.len, status, err, errlen);
+	buf_free(&body);
+	buf_free(&ctype);
+	return j;
+}
+
+Json *rc_upload(Rc *rc, const char *rid, const RcFile *f, const char *desc, const char *tmid, char *err,
+		size_t errlen)
+{
+	Buf path;
+	buf_init(&path);
+	buf_puts(&path, "/api/v1/rooms.media/");
+	url_encode(&path, rid);
+	int status;
+	Json *j = post_multipart(rc, path.data, f, NULL, NULL, &status, err, errlen);
+	if (!j && status == 404) {
+		buf_free(&path);
+		buf_init(&path);
+		buf_puts(&path, "/api/v1/rooms.upload/");
+		url_encode(&path, rid);
+		j = post_multipart(rc, path.data, f, desc, tmid, NULL, err, errlen);
+		buf_free(&path);
+		return j;
+	}
+	if (!j) {
+		buf_free(&path);
+		return NULL;
+	}
+	const char *fid = json_str(json_path(j, "file._id"));
+	if (!fid) {
+		snprintf(err, errlen, "upload response without a file id");
+		json_free(j);
+		buf_free(&path);
+		return NULL;
+	}
+	buf_free(&path);
+	buf_init(&path);
+	buf_puts(&path, "/api/v1/rooms.mediaConfirm/");
+	url_encode(&path, rid);
+	buf_putc(&path, '/');
+	url_encode(&path, fid);
+	json_free(j);
+	Buf body;
+	buf_init(&body);
+	buf_puts(&body, "{\"description\":");
+	buf_json_str(&body, desc ? desc : "");
+	if (tmid) {
+		buf_puts(&body, ",\"tmid\":");
+		buf_json_str(&body, tmid);
+	}
+	buf_putc(&body, '}');
+	j = rc_post(rc, path.data, body.data, err, errlen);
+	buf_free(&body);
+	buf_free(&path);
+	return j;
 }
 
 int rc_login_password(Rc *rc, const char *user, const char *password, char *err, size_t errlen)

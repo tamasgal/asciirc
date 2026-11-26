@@ -66,7 +66,7 @@ static int dechunk(const char *p, size_t n, Buf *out)
 }
 
 int http_request(const Url *u, const char *method, const char *path, const char *extra_headers,
-		 const char *json_body, HttpResponse *resp, char *err, size_t errlen)
+		 const char *ctype, const char *body, size_t body_len, HttpResponse *resp, char *err, size_t errlen)
 {
 	resp->status = 0;
 	buf_init(&resp->body);
@@ -86,15 +86,13 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 	buf_puts(&req, "User-Agent: asciirc\r\nAccept: application/json\r\nConnection: close\r\n");
 	if (extra_headers)
 		buf_puts(&req, extra_headers);
-	if (json_body) {
-		buf_printf(&req, "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n",
-			   strlen(json_body));
-		buf_puts(&req, json_body);
-	} else {
-		buf_puts(&req, "\r\n");
-	}
+	if (ctype)
+		buf_printf(&req, "Content-Type: %s\r\nContent-Length: %zu\r\n", ctype, body_len);
+	buf_puts(&req, "\r\n");
 	int wr = net_write_all(c, req.data, req.len);
 	buf_free(&req);
+	if (wr >= 0 && ctype && body_len > 0)
+		wr = net_write_all(c, body, body_len);
 	if (wr < 0) {
 		snprintf(err, errlen, "write failed");
 		net_close(c);
@@ -137,11 +135,11 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 		return -1;
 	}
 	size_t hlen = (size_t)(hend - raw.data);
-	const char *body = hend + 4;
+	const char *rbody = hend + 4;
 	size_t blen = raw.len - hlen - 4;
 	const char *te = find_header(raw.data, hlen, "Transfer-Encoding");
 	if (te && strncmp(te, "chunked", 7) == 0) {
-		if (dechunk(body, blen, &resp->body) < 0) {
+		if (dechunk(rbody, blen, &resp->body) < 0) {
 			snprintf(err, errlen, "malformed chunked response");
 			buf_free(&raw);
 			buf_free(&resp->body);
@@ -154,7 +152,7 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 			if (want < blen)
 				blen = want;
 		}
-		buf_append(&resp->body, body, blen);
+		buf_append(&resp->body, rbody, blen);
 	}
 	buf_free(&raw);
 	return 0;

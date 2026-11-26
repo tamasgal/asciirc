@@ -116,6 +116,7 @@ typedef struct App {
 	size_t comp_idx;
 	size_t comp_start;
 	size_t comp_len;
+	int comp_paths;
 	int goto_active;
 	char goto_text[64];
 	long goto_match;
@@ -136,6 +137,10 @@ typedef struct App {
 	size_t search_hit;
 	int search_reveal;
 	int search_failed;
+	int pasting;
+	Buf paste;
+	char **upload_paths;
+	size_t upload_n;
 } App;
 
 static inline Server *win_server(const App *app, const Window *w)
@@ -168,6 +173,8 @@ void app_react_send(App *app);
 void app_scroll_start(App *app);
 void app_scroll_end(App *app);
 void app_search(App *app, int dir);
+void app_paste(App *app, const char *text);
+void app_upload_answer(App *app, int yes);
 void app_ddp_tick(App *app);
 void app_ddp_readable(App *app, Server *srv);
 long long app_next_reconnect(const App *app);
