@@ -87,7 +87,7 @@ Windows:
 - `Ctrl+G` go to a window: type a number or part of a name (`work/gen` for a server), `Tab` cycles matches, `Enter` switches
 - `Ctrl+X` jump to the next window with unread messages
 - `Ctrl+N` / `Ctrl+P` next / previous window
-- `PgUp` / `PgDn` scroll
+- `PgUp` / `PgDn` or `Ctrl+U` / `Ctrl+D` scroll half a page, `Ctrl+K` / `Ctrl+J` one line. While scrolled up, `Enter` jumps back to the bottom and keeps what you typed
 - `Ctrl+S` scroll mode: `j` / `k` line, `Ctrl+U` / `Ctrl+D` half page, `Ctrl+B` / `Ctrl+F` page, `g` / `G` top / bottom, `/` searches older lines as you type (`Enter` keeps the match, `Esc` cancels), `n` / `N` next older / newer match, `q` or `Esc` leaves and jumps back to the bottom
 
 Messages:
@@ -96,7 +96,7 @@ Messages:
 - `r` or `Enter` reply in its thread, `Esc` cancels the reply
 - `+` react: type an emoji name, `Tab` cycles matches, `Enter` sends, the same emoji again removes it
 - `Tab` completes @mentions
-- `Shift+Enter` (or `Alt+Enter`) starts a new line in the input, `Up` / `Down` move between its lines
+- `Ctrl+O` (or `Ctrl+M` in terminals with the kitty keyboard protocol) opens the input in `$EDITOR` (default `vi`) to write a longer message. Save and quit to put it into the input, `Enter` sends it. Quitting without saving keeps the input as it was
 
 Commands: `/join #channel`, `/query user`, `/part`, `/names`, `/whois user`, `/win list`, `/server`, `/theme name|random`, `/quit`.
 
