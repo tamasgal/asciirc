@@ -98,7 +98,7 @@ Messages:
 - `Tab` completes @mentions
 - `Shift+Enter` (or `Alt+Enter`) starts a new line in the input, `Up` / `Down` move between its lines
 
-Commands: `/join #channel`, `/query user`, `/part`, `/win list`, `/server`, `/theme name|random`, `/quit`.
+Commands: `/join #channel`, `/query user`, `/part`, `/names`, `/whois user`, `/win list`, `/server`, `/theme name|random`, `/quit`.
 
 ## License
 
