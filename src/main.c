@@ -243,6 +243,20 @@ static void handle_scroll_key(App *app, const Key *k, int page)
 		w->scroll = 0;
 }
 
+static void compose(App *app)
+{
+	char *text;
+	char err[256];
+	int r = ui_edit(app->input.text, &text, err, sizeof(err));
+	if (r < 0)
+		app_error(app, app->wins[app->cur], "%s", err);
+	else if (r > 0 && strlen(text) >= INPUT_MAX)
+		app_error(app, app->wins[app->cur], "Message too long (at most %d bytes)", INPUT_MAX - 1);
+	else if (r > 0)
+		ui_input_set(&app->input, text);
+	free(text);
+}
+
 static void handle_key(App *app, const Key *k)
 {
 	Window *w = app->wins[app->cur];
@@ -271,6 +285,10 @@ static void handle_key(App *app, const Key *k)
 			app_reply_cancel(app);
 		break;
 	case K_ENTER: {
+		if (w->scroll > 0) {
+			w->scroll = 0;
+			break;
+		}
 		char *line = xstrdup(app->input.text);
 		ui_input_push_history(&app->input, line);
 		ui_input_set(&app->input, "");
@@ -318,6 +336,16 @@ static void handle_key(App *app, const Key *k)
 			app_select_start(app);
 		else if (k->c == 's')
 			app_scroll_start(app);
+		else if (k->c == 'o' || k->c == 'm')
+			compose(app);
+		else if (k->c == 'k')
+			w->scroll += 1;
+		else if (k->c == 'j')
+			w->scroll = w->scroll > 1 ? w->scroll - 1 : 0;
+		else if (k->c == 'u')
+			w->scroll += page;
+		else if (k->c == 'd')
+			w->scroll = w->scroll > page ? w->scroll - page : 0;
 		else
 			ui_input_key(&app->input, k);
 		break;

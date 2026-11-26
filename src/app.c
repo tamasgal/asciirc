@@ -1663,8 +1663,10 @@ static void cmd_help(App *app)
 		"Keys: Ctrl+G go to a window by number or name, Ctrl+X jump to activity,",
 		"      Ctrl+R select a message to reply in its thread (r) or react to it (+),",
 		"      Ctrl+N/P next/previous, Alt+1..9,0 and Alt+q..o switch windows,",
-		"      PgUp/PgDn scroll, Ctrl+S scroll mode with vi keys and / search,",
-		"      Tab/Shift+Tab cycle @mentions, // sends a leading slash",
+		"      PgUp/PgDn or Ctrl+U/D scroll, Ctrl+K/J one line, Enter jumps back down,",
+		"      Ctrl+S scroll mode with vi keys and / search,",
+		"      Ctrl+O write the message in $EDITOR, Tab/Shift+Tab cycle @mentions,",
+		"      // sends a leading slash",
 	};
 	for (size_t i = 0; i < sizeof(help) / sizeof(help[0]); i++)
 		app_info(app, current(app), "%s", help[i]);

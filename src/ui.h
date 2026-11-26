@@ -7,7 +7,6 @@ typedef enum {
 	K_NONE,
 	K_CHAR,
 	K_ENTER,
-	K_NEWLINE,
 	K_TAB,
 	K_BTAB,
 	K_BACKSPACE,
@@ -33,6 +32,7 @@ typedef struct {
 
 int ui_init(void);
 void ui_shutdown(void);
+int ui_edit(const char *text, char **out, char *err, size_t errlen);
 int ui_check_resize(void);
 int ui_rows(void);
 int ui_cols(void);

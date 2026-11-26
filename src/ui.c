@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -48,12 +49,11 @@ static void write_all(const char *s, size_t n)
 	}
 }
 
-int ui_init(void)
+static const char term_init[] = "\x1b[?1049h\x1b[?7l\x1b[>1u\x1b[>4;1m\x1b[H\x1b[2J";
+static const char term_fini[] = "\x1b[0m\x1b[?7h\x1b[?25h\x1b[<u\x1b[>4;0m\x1b[?1049l";
+
+static int enter_raw(void)
 {
-	if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO))
-		return -1;
-	if (tcgetattr(STDIN_FILENO, &saved_termios) < 0)
-		return -1;
 	struct termios t = saved_termios;
 	t.c_iflag &= ~(tcflag_t)(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
 	t.c_lflag &= ~(tcflag_t)(ECHO | ICANON | IEXTEN | ISIG);
@@ -62,6 +62,25 @@ int ui_init(void)
 	t.c_cc[VTIME] = 0;
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) < 0)
 		return -1;
+	update_size();
+	write_all(term_init, strlen(term_init));
+	return 0;
+}
+
+static void leave_raw(void)
+{
+	write_all(term_fini, strlen(term_fini));
+	tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+}
+
+int ui_init(void)
+{
+	if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO))
+		return -1;
+	if (tcgetattr(STDIN_FILENO, &saved_termios) < 0)
+		return -1;
+	if (enter_raw() < 0)
+		return -1;
 	term_active = 1;
 
 	struct sigaction sa;
@@ -69,10 +88,6 @@ int ui_init(void)
 	sa.sa_handler = on_winch;
 	sigemptyset(&sa.sa_mask);
 	sigaction(SIGWINCH, &sa, NULL);
-
-	update_size();
-	const char *init = "\x1b[?1049h\x1b[?7l\x1b[>1u\x1b[>4;1m\x1b[H\x1b[2J";
-	write_all(init, strlen(init));
 	return 0;
 }
 
@@ -80,10 +95,105 @@ void ui_shutdown(void)
 {
 	if (!term_active)
 		return;
-	const char *fini = "\x1b[0m\x1b[?7h\x1b[?25h\x1b[<u\x1b[>4;0m\x1b[?1049l";
-	write_all(fini, strlen(fini));
-	tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved_termios);
+	leave_raw();
 	term_active = 0;
+}
+
+static char *read_file(const char *path)
+{
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	Buf b;
+	buf_init(&b);
+	char tmp[4096];
+	size_t n;
+	while ((n = fread(tmp, 1, sizeof(tmp), f)) > 0)
+		buf_append(&b, tmp, n);
+	fclose(f);
+	buf_putc(&b, '\0');
+	return buf_steal(&b);
+}
+
+static int run_editor(const char *path)
+{
+	const char *editor = getenv("EDITOR");
+	if (!editor || !*editor)
+		editor = "vi";
+	Buf cmd;
+	buf_init(&cmd);
+	buf_printf(&cmd, "%s \"$1\"", editor);
+	pid_t pid = fork();
+	if (pid == 0) {
+		execl("/bin/sh", "sh", "-c", cmd.data, "sh", path, (char *)NULL);
+		_exit(127);
+	}
+	buf_free(&cmd);
+	if (pid < 0)
+		return -1;
+	struct sigaction ign, old_int, old_quit;
+	memset(&ign, 0, sizeof(ign));
+	ign.sa_handler = SIG_IGN;
+	sigemptyset(&ign.sa_mask);
+	sigaction(SIGINT, &ign, &old_int);
+	sigaction(SIGQUIT, &ign, &old_quit);
+	int status = 0;
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+		;
+	sigaction(SIGINT, &old_int, NULL);
+	sigaction(SIGQUIT, &old_quit, NULL);
+	return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+int ui_edit(const char *text, char **out, char *err, size_t errlen)
+{
+	*out = NULL;
+	const char *dir = getenv("TMPDIR");
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/asciirc-XXXXXX", dir && *dir ? dir : "/tmp");
+	int fd = mkstemp(path);
+	if (fd < 0) {
+		snprintf(err, errlen, "cannot create temporary file: %s", strerror(errno));
+		return -1;
+	}
+	Buf orig;
+	buf_init(&orig);
+	if (*text) {
+		buf_puts(&orig, text);
+		buf_putc(&orig, '\n');
+	}
+	int ok = orig.len == 0 || write(fd, orig.data, orig.len) == (ssize_t)orig.len;
+	close(fd);
+	if (!ok) {
+		snprintf(err, errlen, "cannot write temporary file: %s", strerror(errno));
+		buf_free(&orig);
+		unlink(path);
+		return -1;
+	}
+
+	leave_raw();
+	int rc = run_editor(path);
+	enter_raw();
+	resized = 1;
+
+	char *res = rc == 0 ? read_file(path) : NULL;
+	unlink(path);
+	int changed = res && strcmp(res, orig.data ? orig.data : "") != 0;
+	buf_free(&orig);
+	if (rc == 127) {
+		snprintf(err, errlen, "could not run the editor, check $EDITOR");
+		free(res);
+		return -1;
+	}
+	if (!changed) {
+		free(res);
+		return 0;
+	}
+	size_t n = strlen(res);
+	while (n > 0 && (res[n - 1] == '\n' || res[n - 1] == '\r'))
+		res[--n] = '\0';
+	*out = res;
+	return 1;
 }
 
 int ui_check_resize(void)
@@ -1299,56 +1409,57 @@ static int draw_goto(App *app, Buf *out, int row)
 	return draw_prompt(out, row, "goto", app->goto_text, hint);
 }
 
-static int prompt_mode(const App *app)
+/* newlines (from the external editor) are shown as a dim ^J */
+static size_t input_char(const char *s, size_t n, int *width)
 {
-	return app->goto_active || app->react_active || app->sel_id || app->search_active || app->scroll_mode;
-}
-
-static int input_rows(const App *app)
-{
-	if (prompt_mode(app))
+	if (*s == '\n') {
+		*width = 2;
 		return 1;
-	int n = 1;
-	for (size_t i = 0; i < app->input.len; i++)
-		n += app->input.text[i] == '\n';
-	int max = (rows - 4) / 2;
-	if (max < 1)
-		max = 1;
-	return n < max ? n : max;
+	}
+	return next_char(s, n, width);
 }
 
-static int put_input_line(Buf *out, const char *s, size_t len, size_t cur, int avail)
+static int put_input(Buf *out, const char *s, size_t len, size_t cur, int avail)
 {
 	size_t start = cur;
-	int before = 0;
+	int before = 0, cw;
 	while (start > 0) {
 		size_t p = start - 1;
 		while (p > 0 && ((unsigned char)s[p] & 0xc0) == 0x80)
 			p--;
-		int cw = str_width(s + p, start - p);
+		input_char(s + p, start - p, &cw);
 		if (before + cw > avail)
 			break;
 		before += cw;
 		start = p;
 	}
-	int used = before, cw;
-	size_t i = cur;
-	while (i < len) {
-		size_t l = next_char(s + i, len - i, &cw);
+	int used = before;
+	size_t end = cur;
+	while (end < len) {
+		size_t l = input_char(s + end, len - end, &cw);
 		if (used + cw > avail)
 			break;
 		used += cw;
+		end += l;
+	}
+	for (size_t i = start; i < end;) {
+		size_t l = input_char(s + i, end - i, &cw);
+		if (s[i] == '\n') {
+			style(out, theme->daychange);
+			buf_puts(out, "^J");
+			style(out, NULL);
+		} else {
+			buf_append(out, s + i, l);
+		}
 		i += l;
 	}
-	buf_append(out, s + start, i - start);
 	return before;
 }
 
-static int draw_input(App *app, Buf *out, int top, int nrows, int *crow)
+static int draw_input(App *app, Buf *out, int row)
 {
-	*crow = top;
 	if (app->goto_active)
-		return draw_goto(app, out, top);
+		return draw_goto(app, out, row);
 	if (app->react_active) {
 		char hint[96];
 		if (app->react_n > 0)
@@ -1357,23 +1468,23 @@ static int draw_input(App *app, Buf *out, int top, int nrows, int *crow)
 			snprintf(hint, sizeof(hint), "-> :%s:", app->react_text);
 		else
 			snprintf(hint, sizeof(hint), "emoji name, Tab cycles, Enter reacts (again removes it), Esc cancels");
-		return draw_prompt(out, top, "react", app->react_text, hint);
+		return draw_prompt(out, row, "react", app->react_text, hint);
 	}
 	if (app->sel_id)
-		return draw_prompt(out, top, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
+		return draw_prompt(out, row, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
 	if (app->search_active)
-		return draw_prompt(out, top, "search", app->search_text,
+		return draw_prompt(out, row, "search", app->search_text,
 				   app->search_failed ? "no match" : "type to search older lines, Enter keeps, Esc cancels");
 	if (app->scroll_mode) {
 		char text[72];
 		snprintf(text, sizeof(text), "%s%s", app->search_text[0] ? "/" : "", app->search_text);
-		return draw_prompt(out, top, "scroll", text,
+		return draw_prompt(out, row, "scroll", text,
 				   app->search_failed ? "no more matches"
 				   : "j/k line, ^U/^D half page, ^B/^F page, g/G top/bottom, / search, n/N older/newer, q quits");
 	}
 	Window *w = app->wins[app->cur];
 	Input *in = &app->input;
-	buf_printf(out, "\x1b[%d;1H", top);
+	buf_printf(out, "\x1b[%d;1H", row);
 	style(out, NULL);
 	buf_putc(out, '[');
 	int pw = 1 + put_trunc(out, win_label(w), cols / 3);
@@ -1389,41 +1500,9 @@ static int draw_input(App *app, Buf *out, int top, int nrows, int *crow)
 	int avail = cols - pw - 1;
 	if (avail < 1)
 		avail = 1;
-	int nl = 1, cl = 0;
-	for (size_t i = 0; i < in->len; i++) {
-		if (in->text[i] == '\n') {
-			nl++;
-			if (i < in->cur)
-				cl++;
-		}
-	}
-	int first = nl - nrows;
-	if (first > cl)
-		first = cl;
-	int col = pw + 1;
-	size_t pos = 0;
-	for (int li = 0; li < nl && li < first + nrows; li++) {
-		size_t end = pos;
-		while (end < in->len && in->text[end] != '\n')
-			end++;
-		if (li >= first) {
-			int r = top + li - first;
-			if (r != top) {
-				buf_printf(out, "\x1b[%d;1H", r);
-				style(out, NULL);
-				buf_printf(out, "%*s", pw, "");
-			}
-			int cur = li == cl;
-			int before = put_input_line(out, in->text + pos, end - pos, cur ? in->cur - pos : 0, avail);
-			buf_puts(out, "\x1b[K");
-			if (cur) {
-				*crow = r;
-				col = pw + before + 1;
-			}
-		}
-		pos = end + 1;
-	}
-	return col;
+	int before = put_input(out, in->text, in->len, in->cur, avail);
+	buf_puts(out, "\x1b[K");
+	return pw + before + 1;
 }
 
 void ui_draw(App *app)
@@ -1447,12 +1526,10 @@ void ui_draw(App *app)
 	draw_bar(&out, 1, top.data, tw);
 	buf_free(&top);
 
-	int nin = input_rows(app);
-	draw_messages(w, app->sel_id, app->scroll_mode ? app->search_hit : 0, &app->search_reveal, &out, 2, rows - 2 - nin);
-	draw_status(app, &out, rows - nin);
-	int crow;
-	int col = draw_input(app, &out, rows - nin + 1, nin, &crow);
-	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", crow, col);
+	draw_messages(w, app->sel_id, app->scroll_mode ? app->search_hit : 0, &app->search_reveal, &out, 2, rows - 3);
+	draw_status(app, &out, rows - 1);
+	int col = draw_input(app, &out, rows);
+	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", rows, col);
 	write_all(out.data, out.len);
 	buf_free(&out);
 }
@@ -1462,7 +1539,7 @@ static void modified_key(Key *k, int code, int mods)
 {
 	int shift = mods & 1, alt = mods & 2, ctrl = mods & 4;
 	if (code == 13)
-		k->type = mods ? K_NEWLINE : K_ENTER;
+		k->type = K_ENTER;
 	else if (code == 27)
 		k->type = K_ESC;
 	else if (code == 9)
@@ -1554,15 +1631,12 @@ size_t ui_parse_keys(const char *buf, size_t n, Key *keys, size_t max)
 				default: break;
 				}
 				i += 3;
-			} else if (p[i + 1] == '\r' || p[i + 1] == '\n') {
-				k.type = K_NEWLINE;
-				i += 2;
 			} else {
 				k.type = K_ALT;
 				k.c = p[i + 1];
 				i += 2;
 			}
-		} else if (c == '\r' || c == '\n') {
+		} else if (c == '\r') {
 			k.type = K_ENTER;
 			i++;
 		} else if (c == 0x7f || c == 0x08) {
@@ -1628,48 +1702,6 @@ static void delete_range(Input *in, size_t a, size_t b)
 		in->cur = a;
 }
 
-static size_t line_start(const Input *in, size_t pos)
-{
-	while (pos > 0 && in->text[pos - 1] != '\n')
-		pos--;
-	return pos;
-}
-
-static size_t line_end(const Input *in, size_t pos)
-{
-	while (pos < in->len && in->text[pos] != '\n')
-		pos++;
-	return pos;
-}
-
-static void insert(Input *in, const char *s, size_t n)
-{
-	if (in->len + n >= INPUT_MAX)
-		return;
-	memmove(in->text + in->cur + n, in->text + in->cur, in->len - in->cur);
-	memcpy(in->text + in->cur, s, n);
-	in->len += n;
-	in->cur += n;
-	in->text[in->len] = '\0';
-}
-
-static void line_move(Input *in, int dir)
-{
-	size_t ls = line_start(in, in->cur);
-	int col = str_width(in->text + ls, in->cur - ls);
-	size_t p = dir < 0 ? line_start(in, ls - 1) : line_end(in, in->cur) + 1;
-	size_t end = line_end(in, p);
-	int w = 0, cw;
-	while (p < end) {
-		size_t l = next_char(in->text + p, end - p, &cw);
-		if (w + cw > col)
-			break;
-		w += cw;
-		p += l;
-	}
-	in->cur = p;
-}
-
 void ui_input_set(Input *in, const char *s)
 {
 	size_t n = strlen(s);
@@ -1716,12 +1748,17 @@ static void history_move(Input *in, int dir)
 int ui_input_key(Input *in, const Key *k)
 {
 	switch (k->type) {
-	case K_CHAR:
-		insert(in, k->utf8, strlen(k->utf8));
+	case K_CHAR: {
+		size_t n = strlen(k->utf8);
+		if (in->len + n >= INPUT_MAX)
+			return 1;
+		memmove(in->text + in->cur + n, in->text + in->cur, in->len - in->cur);
+		memcpy(in->text + in->cur, k->utf8, n);
+		in->len += n;
+		in->cur += n;
+		in->text[in->len] = '\0';
 		return 1;
-	case K_NEWLINE:
-		insert(in, "\n", 1);
-		return 1;
+	}
 	case K_BACKSPACE:
 		delete_range(in, prev_pos(in, in->cur), in->cur);
 		return 1;
@@ -1735,40 +1772,26 @@ int ui_input_key(Input *in, const Key *k)
 		in->cur = next_pos(in, in->cur);
 		return 1;
 	case K_HOME:
-		in->cur = line_start(in, in->cur);
+		in->cur = 0;
 		return 1;
 	case K_END:
-		in->cur = line_end(in, in->cur);
+		in->cur = in->len;
 		return 1;
 	case K_UP:
-		if (line_start(in, in->cur) > 0)
-			line_move(in, -1);
-		else
-			history_move(in, -1);
+		history_move(in, -1);
 		return 1;
 	case K_DOWN:
-		if (line_end(in, in->cur) < in->len)
-			line_move(in, 1);
-		else
-			history_move(in, 1);
+		history_move(in, 1);
 		return 1;
 	case K_CTRL:
 		switch (k->c) {
-		case 'a': in->cur = line_start(in, in->cur); return 1;
-		case 'e': in->cur = line_end(in, in->cur); return 1;
+		case 'a': in->cur = 0; return 1;
+		case 'e': in->cur = in->len; return 1;
 		case 'b': in->cur = prev_pos(in, in->cur); return 1;
 		case 'f': in->cur = next_pos(in, in->cur); return 1;
 		case 'd': delete_range(in, in->cur, next_pos(in, in->cur)); return 1;
-		case 'k': {
-			size_t e = line_end(in, in->cur);
-			delete_range(in, in->cur, e > in->cur ? e : next_pos(in, in->cur));
-			return 1;
-		}
-		case 'u': {
-			size_t b = line_start(in, in->cur);
-			delete_range(in, b < in->cur ? b : prev_pos(in, in->cur), in->cur);
-			return 1;
-		}
+		case 'k': delete_range(in, in->cur, in->len); return 1;
+		case 'u': delete_range(in, 0, in->cur); return 1;
 		case 'w': {
 			size_t p = in->cur;
 			while (p > 0 && (in->text[p - 1] == ' ' || in->text[p - 1] == '\n'))
