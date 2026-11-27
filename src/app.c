@@ -28,6 +28,12 @@ static void line_free(Line *ln)
 	free(ln->msgid);
 	free(ln->raw);
 	free(ln->tmid);
+	for (size_t i = 0; i < ln->natts; i++) {
+		free(ln->atts[i].name);
+		free(ln->atts[i].link);
+		free(ln->atts[i].mime);
+	}
+	free(ln->atts);
 }
 
 static Window *win_new(App *app, Server *srv, const char *rid, const char *name, char type)
@@ -101,9 +107,19 @@ static void upload_cancel(App *app)
 	app->upload_n = 0;
 }
 
+static void view_free(App *app)
+{
+	app->view_active = 0;
+	app->view_dirty = 0;
+	free(app->view_name);
+	app->view_name = NULL;
+	buf_free(&app->view_data);
+}
+
 static void reset_modes(App *app)
 {
 	upload_cancel(app);
+	view_free(app);
 	free(app->sel_id);
 	app->sel_id = NULL;
 	free(app->reply_tmid);
@@ -280,7 +296,30 @@ static int mentions_me(const Json *m, const char *me)
 	return 0;
 }
 
-static void describe_attachments(Server *srv, Buf *b, const Json *m)
+static void put_size(Buf *b, long long n)
+{
+	if (n >= 1024 * 1024)
+		buf_printf(b, "%.1f MB", n / 1048576.0);
+	else if (n >= 1024)
+		buf_printf(b, "%lld kB", (n + 1023) / 1024);
+	else
+		buf_printf(b, "%lld B", n);
+}
+
+static const Json *file_entry(const Json *m, const char *name)
+{
+	const Json *files = json_get(m, "files");
+	for (size_t i = 0; i < json_len(files); i++) {
+		const char *fn = json_get_str(json_at(files, i), "name");
+		if (fn && name && strcmp(fn, name) == 0)
+			return json_at(files, i);
+	}
+	const Json *f = json_get(m, "file");
+	const char *fn = json_get_str(f, "name");
+	return fn && name && strcmp(fn, name) == 0 ? f : NULL;
+}
+
+static void describe_attachments(Line *ln, Buf *b, const Json *m)
 {
 	const Json *atts = json_get(m, "attachments");
 	for (size_t i = 0; i < json_len(atts); i++) {
@@ -293,10 +332,28 @@ static void describe_attachments(Server *srv, Buf *b, const Json *m)
 		if (b->len > 0)
 			buf_putc(b, '\n');
 		if (link) {
-			buf_printf(b, "[file] %s ", title ? title : "");
-			if (link[0] == '/')
-				base_url(&srv->rc.url, b);
-			buf_puts(b, link);
+			const Json *f = file_entry(m, title);
+			const char *mime = json_get_str(a, "image_type");
+			if (!mime)
+				mime = json_get_str(f, "type");
+			double size = json_num(json_get(a, "image_size"), json_num(json_get(a, "size"), json_num(json_get(f, "size"), -1)));
+			ln->atts = xrealloc(ln->atts, (ln->natts + 1) * sizeof(*ln->atts));
+			Attachment *at = &ln->atts[ln->natts++];
+			at->name = ui_sanitize(title ? title : path_base(link));
+			at->link = xstrdup(link);
+			at->mime = mime ? ui_sanitize(mime) : NULL;
+			at->size = (long long)size;
+			at->width = (int)json_num(json_path(a, "image_dimensions.width"), 0);
+			at->height = (int)json_num(json_path(a, "image_dimensions.height"), 0);
+			buf_printf(b, "[file] %s", at->name);
+			if (at->size >= 0 || at->mime) {
+				buf_puts(b, " (");
+				if (at->size >= 0)
+					put_size(b, at->size);
+				if (at->mime)
+					buf_printf(b, "%s%s", at->size >= 0 ? ", " : "", at->mime);
+				buf_putc(b, ')');
+			}
 			if (desc && *desc)
 				buf_printf(b, " %s", desc);
 		} else if (author && text) {
@@ -470,7 +527,7 @@ static int msg_to_line(App *app, const Json *m, Window *w, Line *ln, const Json 
 		size_t before = text.len;
 		Buf att;
 		buf_init(&att);
-		describe_attachments(srv, &att, m);
+		describe_attachments(ln, &att, m);
 		if (att.len) {
 			if (before > 0 && msg[0])
 				buf_putc(&text, '\n');
@@ -529,6 +586,23 @@ static int msg_to_line(App *app, const Json *m, Window *w, Line *ln, const Json 
 	return 0;
 }
 
+/* moves the changed parts of ln into old, ln keeps the old ones for line_free */
+static void line_update(Line *old, Line *ln)
+{
+	Line tmp = *old;
+	old->text = ln->text;
+	old->raw = ln->raw;
+	old->atts = ln->atts;
+	old->natts = ln->natts;
+	old->kind = ln->kind;
+	old->ctx_len = ln->ctx_len;
+	old->meta_len = ln->meta_len;
+	ln->text = tmp.text;
+	ln->raw = tmp.raw;
+	ln->atts = tmp.atts;
+	ln->natts = tmp.natts;
+}
+
 static void add_message(App *app, Window *w, const Json *m, int notify)
 {
 	Line ln;
@@ -538,15 +612,7 @@ static void add_message(App *app, Window *w, const Json *m, int notify)
 		Line *old = find_line(w, ln.msgid);
 		if (old) {
 			if (strcmp(old->text, ln.text) != 0 || ln.kind != old->kind) {
-				char *tmp = old->text;
-				old->text = ln.text;
-				ln.text = tmp;
-				tmp = old->raw;
-				old->raw = ln.raw;
-				ln.raw = tmp;
-				old->kind = ln.kind;
-				old->ctx_len = ln.ctx_len;
-				old->meta_len = ln.meta_len;
+				line_update(old, &ln);
 				app->dirty = 1;
 			}
 			line_free(&ln);
@@ -611,13 +677,8 @@ static void merge_history(App *app, Window *w, const Json *msgs)
 			continue;
 		Line *old = ln.msgid ? find_line(w, ln.msgid) : NULL;
 		if (old) {
-			if (strcmp(old->text, ln.text) != 0) {
-				char *tmp = old->text;
-				old->text = ln.text;
-				ln.text = tmp;
-				old->ctx_len = ln.ctx_len;
-				old->meta_len = ln.meta_len;
-			}
+			if (strcmp(old->text, ln.text) != 0)
+				line_update(old, &ln);
 			line_free(&ln);
 			continue;
 		}
@@ -1041,6 +1102,15 @@ void app_init(App *app)
 	buf_init(&app->paste);
 	app->upload_paths = NULL;
 	app->upload_n = 0;
+	app->gfx = GFX_NONE;
+	app->downloads = NULL;
+	app->view_active = 0;
+	app->view_dirty = 0;
+	app->view_idx = 0;
+	app->view_name = NULL;
+	buf_init(&app->view_data);
+	app->view_w = 0;
+	app->view_h = 0;
 	Window *st = win_new(app, NULL, NULL, "(status)", 0);
 	st->history_loaded = 1;
 }
@@ -1072,6 +1142,8 @@ void app_free(App *app)
 	free(app->react_list);
 	upload_cancel(app);
 	buf_free(&app->paste);
+	view_free(app);
+	free(app->downloads);
 	for (int i = 0; i < app->input.nhistory; i++)
 		free(app->input.history[i]);
 }
@@ -2297,6 +2369,137 @@ void app_select_end(App *app)
 	free(app->sel_id);
 	app->sel_id = NULL;
 	app->react_active = 0;
+	view_free(app);
+	app->dirty = 1;
+}
+
+static const Line *selected_line(App *app)
+{
+	long i = selected_index(app);
+	return i < 0 ? NULL : &current(app)->lines[i];
+}
+
+static int fetch_attachment(App *app, const Attachment *at, Buf *out)
+{
+	Window *w = current(app);
+	Buf msg;
+	buf_init(&msg);
+	if (at->size >= 0) {
+		buf_puts(&msg, " (");
+		put_size(&msg, at->size);
+		buf_putc(&msg, ')');
+	}
+	app_info(app, w, "Fetching %s%s...", at->name, msg.data ? msg.data : "");
+	buf_free(&msg);
+	ui_draw(app);
+	Err e;
+	buf_init(out);
+	if (rc_fetch(&w->srv->rc, at->link, out, e.err, sizeof(e.err)) < 0) {
+		app_error(app, w, "Could not fetch %s: %s", at->name, e.err);
+		return -1;
+	}
+	return 0;
+}
+
+static char *save_data(App *app, const char *name, const Buf *data)
+{
+	if (!app->downloads)
+		app->downloads = downloads_dir(NULL);
+	Err e;
+	char *path = save_unique(app->downloads, name, data->data ? data->data : "", data->len, e.err, sizeof(e.err));
+	if (!path) {
+		app_error(app, current(app), "Could not save %s: %s", name, e.err);
+		return NULL;
+	}
+	char *shown = ui_sanitize(path);
+	app_info(app, current(app), "Saved %s", shown);
+	free(shown);
+	return path;
+}
+
+static int viewable(App *app, const Attachment *at, Buf *data, int *w, int *h)
+{
+	if (app->gfx == GFX_NONE || (at->mime && strcmp(at->mime, "image/svg+xml") == 0))
+		return 0;
+	int known = image_size((const unsigned char *)data->data, data->len, w, h) == 0;
+	if (!known && !(at->mime && strncmp(at->mime, "image/", 6) == 0))
+		return 0;
+	if (!known || *w <= 0 || *h <= 0) {
+		*w = at->width;
+		*h = at->height;
+	}
+	if (app->gfx == GFX_KITTY && (data->len < 8 || memcmp(data->data, "\x89PNG", 4) != 0)) {
+		Buf png;
+		if (convert_png(data, &png) < 0)
+			return 0;
+		buf_free(data);
+		*data = png;
+		if (image_size((const unsigned char *)data->data, data->len, w, h) < 0)
+			*w = *h = 0;
+	}
+	return 1;
+}
+
+static void open_index(App *app, const Line *ln, size_t idx)
+{
+	const Attachment *at = &ln->atts[idx];
+	Buf data;
+	if (fetch_attachment(app, at, &data) < 0)
+		return;
+	int w = 0, h = 0;
+	if (viewable(app, at, &data, &w, &h)) {
+		view_free(app);
+		app->view_active = 1;
+		app->view_dirty = 1;
+		app->view_idx = idx;
+		app->view_name = xstrdup(at->name);
+		app->view_data = data;
+		app->view_w = w;
+		app->view_h = h;
+		app->dirty = 1;
+		return;
+	}
+	char *path = save_data(app, at->name, &data);
+	if (path)
+		open_external(path);
+	free(path);
+	buf_free(&data);
+	app->dirty = 1;
+}
+
+void app_attachment_open(App *app)
+{
+	const Line *ln = selected_line(app);
+	if (!ln || ln->natts == 0) {
+		app_error(app, current(app), "No attachment in this message");
+		return;
+	}
+	open_index(app, ln, 0);
+}
+
+void app_view_step(App *app, int dir)
+{
+	const Line *ln = selected_line(app);
+	if (!ln || ln->natts < 2)
+		return;
+	size_t idx = (app->view_idx + ln->natts + (size_t)(dir > 0 ? 1 : -1)) % ln->natts;
+	open_index(app, ln, idx);
+}
+
+void app_view_save(App *app, int open)
+{
+	if (!app->view_active)
+		return;
+	char *path = save_data(app, app->view_name, &app->view_data);
+	if (path && open)
+		open_external(path);
+	free(path);
+	app->dirty = 1;
+}
+
+void app_view_close(App *app)
+{
+	view_free(app);
 	app->dirty = 1;
 }
 

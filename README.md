@@ -67,6 +67,8 @@ Options:
 - `insecure = 1`: do not verify the TLS certificate of that server
 - `theme`: `default`, `solarized-dark`, `solarized-light`, `monokai`, `gruvbox`, `gruvbox-light`, `nord`, `dracula`, `tokyo-night`, `catppuccin-mocha`, `catppuccin-latte`, `one-dark`, `everforest`, `rose-pine`, `kanagawa`, `ayu-dark`, `ayu-light`, `github-dark`, `github-light`, `nightfox`, `palenight`, `zenburn`, `papercolor-light`, `synthwave`, `matrix`, `amber`, `mono`, or `random` for a different one at every start
 - `nicks = name` shows real names, `nicks = username` shows usernames
+- `downloads`: where attachments are saved, default `~/Downloads`
+- `images`: `auto` (default), `iterm`, `kitty` or `off`, how images are shown in the terminal
 
 `./asciirc -S work` connects to the `[work]` server only.
 
@@ -103,6 +105,7 @@ Files:
 
 - `/upload file... [description]` uploads files to the current room, or to the thread of a selected reply. `Tab` completes paths
 - Dropping a file on the terminal (Terminal.app, iTerm2, Ghostty, kitty and others that support bracketed paste) asks `Upload file to #room? y/n`. If the input already starts with `/upload`, the dropped path is inserted instead, so a description can follow
+- Attachments show as `[file] name (size, type)`. Select the message with `Ctrl+R` and press `o`: images are shown in the terminal (iTerm2 and WezTerm via the iTerm2 image protocol, kitty and Ghostty via the kitty graphics protocol, other formats than PNG are converted with `sips` on macOS there). In the image view `n` / `p` switch between the attachments of the message, `d` saves, `o` opens it in the system viewer, `q` closes. Other files, or images in terminals without graphics (Terminal.app, tmux), are saved to the downloads directory and opened with `open` / `xdg-open`. The client downloads with its own credentials, so no browser session is needed
 
 Commands: `/join #channel`, `/query user`, `/part`, `/names`, `/whois user`, `/win list`, `/server`, `/theme name|random`, `/upload file`, `/quit`.
 

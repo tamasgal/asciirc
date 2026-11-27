@@ -12,5 +12,9 @@ size_t path_complete(const char *typed, char ***out);
 const char *mime_type(const char *name);
 const char *path_base(const char *path);
 void path_list_free(char **list, size_t n);
+char *save_unique(const char *dir, const char *name, const void *data, size_t len, char *err, size_t errlen);
+void open_external(const char *path);
+char *downloads_dir(const char *setting);
+int convert_png(const Buf *in, Buf *out);
 
 #endif

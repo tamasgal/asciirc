@@ -69,6 +69,7 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 		 const char *ctype, const char *body, size_t body_len, HttpResponse *resp, char *err, size_t errlen)
 {
 	resp->status = 0;
+	resp->location = NULL;
 	buf_init(&resp->body);
 
 	Conn *c = net_connect(u, err, errlen);
@@ -137,12 +138,17 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 	size_t hlen = (size_t)(hend - raw.data);
 	const char *rbody = hend + 4;
 	size_t blen = raw.len - hlen - 4;
+	const char *loc = find_header(raw.data, hlen, "Location");
+	if (loc)
+		resp->location = xstrndup(loc, strcspn(loc, "\r\n"));
 	const char *te = find_header(raw.data, hlen, "Transfer-Encoding");
 	if (te && strncmp(te, "chunked", 7) == 0) {
 		if (dechunk(rbody, blen, &resp->body) < 0) {
 			snprintf(err, errlen, "malformed chunked response");
 			buf_free(&raw);
 			buf_free(&resp->body);
+			free(resp->location);
+			resp->location = NULL;
 			return -1;
 		}
 	} else {
@@ -161,4 +167,6 @@ int http_request(const Url *u, const char *method, const char *path, const char 
 void http_response_free(HttpResponse *resp)
 {
 	buf_free(&resp->body);
+	free(resp->location);
+	resp->location = NULL;
 }

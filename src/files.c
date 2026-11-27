@@ -1,9 +1,14 @@
 #include "files.h"
 
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static int hexval(char c)
 {
@@ -229,4 +234,159 @@ void path_list_free(char **list, size_t n)
 	for (size_t i = 0; i < n; i++)
 		free(list[i]);
 	free(list);
+}
+
+/* writes data to dir/name, or "name (1).ext" and so on if that exists */
+char *save_unique(const char *dir, const char *name, const void *data, size_t len, char *err, size_t errlen)
+{
+	Buf base;
+	buf_init(&base);
+	for (const char *p = path_base(name); *p; p++)
+		buf_putc(&base, (unsigned char)*p < 0x20 || *p == '/' ? '_' : *p);
+	if (!base.data || base.data[0] == '.') {
+		Buf b;
+		buf_init(&b);
+		buf_printf(&b, "file%s", base.data ? base.data : "");
+		buf_free(&base);
+		base = b;
+	}
+	const char *dot = strrchr(base.data, '.');
+	size_t stem = dot && dot != base.data ? (size_t)(dot - base.data) : base.len;
+	for (int i = 0; i < 1000; i++) {
+		Buf path;
+		buf_init(&path);
+		if (i == 0)
+			buf_printf(&path, "%s/%s", dir, base.data);
+		else
+			buf_printf(&path, "%s/%.*s (%d)%s", dir, (int)stem, base.data, i, base.data + stem);
+		int fd = open(path.data, O_WRONLY | O_CREAT | O_EXCL, 0644);
+		if (fd < 0 && errno == EEXIST) {
+			buf_free(&path);
+			continue;
+		}
+		if (fd < 0) {
+			snprintf(err, errlen, "cannot create %s: %s", path.data, strerror(errno));
+			buf_free(&path);
+			buf_free(&base);
+			return NULL;
+		}
+		const char *p = data;
+		size_t left = len;
+		while (left > 0) {
+			ssize_t w = write(fd, p, left);
+			if (w < 0 && errno == EINTR)
+				continue;
+			if (w <= 0)
+				break;
+			p += w;
+			left -= (size_t)w;
+		}
+		if (close(fd) < 0 || left > 0) {
+			snprintf(err, errlen, "cannot write %s", path.data);
+			unlink(path.data);
+			buf_free(&path);
+			buf_free(&base);
+			return NULL;
+		}
+		buf_free(&base);
+		return buf_steal(&path);
+	}
+	snprintf(err, errlen, "too many files named %s in %s", base.data, dir);
+	buf_free(&base);
+	return NULL;
+}
+
+void open_external(const char *path)
+{
+#ifdef __APPLE__
+	const char *cmd = "open";
+#else
+	const char *cmd = "xdg-open";
+#endif
+	pid_t pid = fork();
+	if (pid == 0) {
+		if (fork() == 0) {
+			int fd = open("/dev/null", O_RDWR);
+			if (fd >= 0) {
+				dup2(fd, 0);
+				dup2(fd, 1);
+				dup2(fd, 2);
+			}
+			execlp(cmd, cmd, path, (char *)NULL);
+			_exit(127);
+		}
+		_exit(0);
+	}
+	if (pid > 0)
+		while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+			;
+}
+
+char *downloads_dir(const char *setting)
+{
+	if (setting && *setting)
+		return expand(setting);
+	const char *home = getenv("HOME");
+	if (!home)
+		return xstrdup(".");
+	Buf b;
+	buf_init(&b);
+	buf_printf(&b, "%s/Downloads", home);
+	struct stat st;
+	if (stat(b.data, &st) == 0 && S_ISDIR(st.st_mode))
+		return buf_steal(&b);
+	buf_free(&b);
+	return xstrdup(home);
+}
+
+/* converts an image to PNG with sips, which macOS always has */
+int convert_png(const Buf *in, Buf *out)
+{
+#ifdef __APPLE__
+	const char *tmp = getenv("TMPDIR");
+	char src[1024], dst[1100];
+	snprintf(src, sizeof(src), "%s/asciirc-img-XXXXXX", tmp && *tmp ? tmp : "/tmp");
+	int fd = mkstemp(src);
+	if (fd < 0)
+		return -1;
+	int ok = write(fd, in->data, in->len) == (ssize_t)in->len;
+	close(fd);
+	snprintf(dst, sizeof(dst), "%s.png", src);
+	int ret = -1;
+	pid_t pid = ok ? fork() : -1;
+	if (pid == 0) {
+		int nul = open("/dev/null", O_RDWR);
+		if (nul >= 0) {
+			dup2(nul, 0);
+			dup2(nul, 1);
+			dup2(nul, 2);
+		}
+		execl("/usr/bin/sips", "sips", "-s", "format", "png", src, "--out", dst, (char *)NULL);
+		_exit(127);
+	}
+	int status = 0;
+	if (pid > 0) {
+		while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+			;
+		FILE *f = WIFEXITED(status) && WEXITSTATUS(status) == 0 ? fopen(dst, "rb") : NULL;
+		if (f) {
+			buf_init(out);
+			char chunk[65536];
+			size_t n;
+			while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
+				buf_append(out, chunk, n);
+			fclose(f);
+			ret = out->len > 0 ? 0 : -1;
+			if (ret < 0)
+				buf_free(out);
+		}
+	}
+	unlink(src);
+	unlink(dst);
+	return ret;
+#else
+	(void)in;
+	(void)out;
+	return -1;
+#endif
 }

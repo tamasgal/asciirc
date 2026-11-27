@@ -1,5 +1,6 @@
 #include "app.h"
 #include "config.h"
+#include "files.h"
 #include "net.h"
 #include "rc.h"
 #include "ui.h"
@@ -185,8 +186,29 @@ static void handle_select_key(App *app, const Key *k)
 		app_reply_start(app);
 	else if (strcmp(c, "+") == 0)
 		app_react_start(app);
+	else if (strcmp(c, "o") == 0)
+		app_attachment_open(app);
 	else if (k->type == K_ESC || strcmp(c, "q") == 0 || (k->type == K_CTRL && (k->c == 'r' || k->c == 'c')))
 		app_select_end(app);
+}
+
+static void handle_view_key(App *app, const Key *k)
+{
+	const char *c = k->type == K_CHAR ? k->utf8 : "";
+	if (strcmp(c, "n") == 0 || k->type == K_RIGHT || k->type == K_TAB)
+		app_view_step(app, 1);
+	else if (strcmp(c, "p") == 0 || k->type == K_LEFT || k->type == K_BTAB)
+		app_view_step(app, -1);
+	else if (strcmp(c, "d") == 0)
+		app_view_save(app, 0);
+	else if (strcmp(c, "o") == 0)
+		app_view_save(app, 1);
+	else if (strcmp(c, "q") == 0 || k->type == K_ESC)
+		app_view_close(app);
+	else if (k->type == K_CTRL && (k->c == 'r' || k->c == 'c'))
+		app_select_end(app);
+	else if (k->type == K_CTRL && k->c == 'l')
+		app->view_dirty = 1;
 }
 
 static void handle_search_key(App *app, const Key *k)
@@ -259,7 +281,8 @@ static void compose(App *app)
 
 static int prompt_active(const App *app)
 {
-	return app->goto_active || app->react_active || app->sel_id || app->scroll_mode || app->upload_n;
+	return app->goto_active || app->react_active || app->sel_id || app->scroll_mode || app->upload_n ||
+	       app->view_active;
 }
 
 static void handle_key(App *app, const Key *k);
@@ -318,7 +341,9 @@ static void handle_key(App *app, const Key *k)
 	if (k->type != K_TAB && k->type != K_BTAB)
 		app_tab_reset(app);
 	if (prompt_active(app)) {
-		if (app->goto_active)
+		if (app->view_active)
+			handle_view_key(app, k);
+		else if (app->goto_active)
 			handle_goto_key(app, k);
 		else if (app->react_active)
 			handle_react_key(app, k);
@@ -603,6 +628,8 @@ int main(int argc, char **argv)
 	App app;
 	app_init(&app);
 	app.show_usernames = cfg.show_usernames;
+	app.gfx = gfx_detect(cfg.images);
+	app.downloads = downloads_dir(cfg.downloads);
 	char **failed = xcalloc(cfg.nservers, sizeof(*failed));
 	size_t nfailed = 0;
 	for (size_t i = 0; i < cfg.nservers; i++) {

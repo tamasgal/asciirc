@@ -10,11 +10,11 @@ CFLAGS += -std=c99 -Wall -Wextra -pedantic
 CPPFLAGS += -D_XOPEN_SOURCE=700 -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE $(OPENSSL_CFLAGS)
 LDLIBS += $(OPENSSL_LIBS)
 
-SRC = src/main.c src/app.c src/config.c src/ui.c src/rc.c src/ws.c src/http.c src/net.c src/json.c src/files.c src/util.c
+SRC = src/main.c src/app.c src/config.c src/ui.c src/rc.c src/ws.c src/http.c src/net.c src/json.c src/files.c src/image.c src/util.c
 OBJ = $(SRC:.c=.o)
-HDR = src/app.h src/config.h src/ui.h src/rc.h src/ws.h src/http.h src/net.h src/json.h src/files.h src/util.h
+HDR = src/app.h src/config.h src/ui.h src/rc.h src/ws.h src/http.h src/net.h src/json.h src/files.h src/image.h src/util.h
 
-TEST_OBJ = tests/test.o src/config.o src/json.o src/util.o src/net.o src/http.o src/ws.o src/rc.o src/files.o src/ui.o
+TEST_OBJ = tests/test.o src/config.o src/json.o src/util.o src/net.o src/http.o src/ws.o src/rc.o src/files.o src/image.o src/ui.o
 
 all: asciirc
 

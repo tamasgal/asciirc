@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "files.h"
+#include "image.h"
 #include "util.h"
 
 #include <ctype.h>
@@ -27,12 +28,16 @@ static void on_winch(int sig)
 	resized = 1;
 }
 
+static int cell_w, cell_h;
+
 static void update_size(void)
 {
 	struct winsize ws;
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0 && ws.ws_col > 0) {
 		rows = ws.ws_row;
 		cols = ws.ws_col;
+		cell_w = ws.ws_xpixel / ws.ws_col;
+		cell_h = ws.ws_ypixel / ws.ws_row;
 	}
 }
 
@@ -1482,8 +1487,20 @@ static int draw_input(App *app, Buf *out, int row)
 		free(name);
 		return draw_prompt(out, row, "upload", "", hint);
 	}
+	if (app->view_active) {
+		char hint[256];
+		Buf size;
+		buf_init(&size);
+		if (app->view_w > 0 && app->view_h > 0)
+			buf_printf(&size, " %dx%d", app->view_w, app->view_h);
+		snprintf(hint, sizeof(hint), "%s n/p next/previous attachment, d save, o open externally, q close",
+			 size.data ? size.data : "");
+		buf_free(&size);
+		return draw_prompt(out, row, "view", app->view_name, hint);
+	}
 	if (app->sel_id)
-		return draw_prompt(out, row, "select", "", "Up/Down move, Enter or r reply in thread, + react, Esc cancels");
+		return draw_prompt(out, row, "select", "",
+				   "Up/Down move, Enter or r reply in thread, + react, o open attachment, Esc cancels");
 	if (app->search_active)
 		return draw_prompt(out, row, "search", app->search_text,
 				   app->search_failed ? "no match" : "type to search older lines, Enter keeps, Esc cancels");
@@ -1517,6 +1534,32 @@ static int draw_input(App *app, Buf *out, int row)
 	return pw + before + 1;
 }
 
+static Graphics image_shown;
+static int view_rows, view_cols;
+
+/* the image is only sent again when it changed or the window was resized */
+static void draw_view(App *app, Buf *out)
+{
+	if (!app->view_dirty && view_rows == rows && view_cols == cols)
+		return;
+	app->view_dirty = 0;
+	view_rows = rows;
+	view_cols = cols;
+	if (image_shown == GFX_KITTY)
+		gfx_kitty_clear(out);
+	style(out, NULL);
+	for (int r = 2; r <= rows - 2; r++)
+		buf_printf(out, "\x1b[%d;1H\x1b[K", r);
+	int c, r;
+	fit_cells(app->view_w, app->view_h, cell_w, cell_h, cols, rows - 3, &c, &r);
+	buf_printf(out, "\x1b[2;%dH", (cols - c) / 2 + 1);
+	if (app->gfx == GFX_KITTY)
+		gfx_kitty(out, app->view_data.data, app->view_data.len, c, r);
+	else
+		gfx_iterm(out, app->view_data.data, app->view_data.len, c, r);
+	image_shown = app->gfx;
+}
+
 void ui_draw(App *app)
 {
 	if (rows < 4 || cols < 10)
@@ -1538,7 +1581,17 @@ void ui_draw(App *app)
 	draw_bar(&out, 1, top.data, tw);
 	buf_free(&top);
 
-	draw_messages(w, app->sel_id, app->scroll_mode ? app->search_hit : 0, &app->search_reveal, &out, 2, rows - 3);
+	if (app->view_active)
+		draw_view(app, &out);
+	else {
+		if (image_shown) {
+			if (image_shown == GFX_KITTY)
+				gfx_kitty_clear(&out);
+			buf_puts(&out, "\x1b[2J");
+			image_shown = GFX_NONE;
+		}
+		draw_messages(w, app->sel_id, app->scroll_mode ? app->search_hit : 0, &app->search_reveal, &out, 2, rows - 3);
+	}
 	draw_status(app, &out, rows - 1);
 	int col = draw_input(app, &out, rows);
 	buf_printf(&out, "\x1b[%d;%dH\x1b[?25h", rows, col);

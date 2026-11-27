@@ -122,6 +122,74 @@ static Json *post_multipart(Rc *rc, const char *path, const RcFile *f, const cha
 	return j;
 }
 
+static int split_url(const char *s, Url *u, const char **path)
+{
+	const char *host = strstr(s, "://");
+	if (!host)
+		return -1;
+	const char *slash = strchr(host + 3, '/');
+	char *base = xstrndup(s, slash ? (size_t)(slash - s) : strlen(s));
+	int r = url_parse(base, u);
+	free(base);
+	*path = slash ? slash : "/";
+	return r;
+}
+
+/* GET a file link from a message, relative to the server or absolute, following redirects.
+   Credentials are only sent to the server itself. */
+int rc_fetch(Rc *rc, const char *link, Buf *out, char *err, size_t errlen)
+{
+	Url u = rc->url;
+	char *cur = xstrdup(link);
+	int ret = -1;
+	err[0] = '\0';
+	for (int hop = 0; hop < 6; hop++) {
+		const char *path = cur;
+		if (cur[0] != '/') {
+			if (split_url(cur, &u, &path) < 0) {
+				snprintf(err, errlen, "unsupported link");
+				break;
+			}
+			u.insecure = rc->url.insecure;
+		} else if (hop == 0) {
+			u = rc->url;
+		} else {
+			u.path[0] = '\0';
+		}
+		int same = strcmp(u.host, rc->url.host) == 0 && strcmp(u.port, rc->url.port) == 0 && u.tls == rc->url.tls;
+		Buf h;
+		buf_init(&h);
+		if (same)
+			auth_headers(rc, &h);
+		HttpResponse resp;
+		int r = http_request(&u, "GET", path, h.data, NULL, NULL, 0, &resp, err, errlen);
+		buf_free(&h);
+		if (r < 0)
+			break;
+		if (resp.status >= 300 && resp.status < 400 && resp.location) {
+			free(cur);
+			cur = xstrdup(resp.location);
+			http_response_free(&resp);
+			continue;
+		}
+		if (resp.status < 200 || resp.status >= 300) {
+			snprintf(err, errlen, resp.status == 401 || resp.status == 403 ? "access denied (HTTP %d)" : "HTTP %d",
+				 resp.status);
+			http_response_free(&resp);
+			break;
+		}
+		*out = resp.body;
+		buf_init(&resp.body);
+		http_response_free(&resp);
+		ret = 0;
+		break;
+	}
+	if (ret < 0 && !err[0])
+		snprintf(err, errlen, "too many redirects");
+	free(cur);
+	return ret;
+}
+
 Json *rc_upload(Rc *rc, const char *rid, const RcFile *f, const char *desc, const char *tmid, char *err,
 		size_t errlen)
 {

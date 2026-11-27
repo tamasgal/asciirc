@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <time.h>
 
+#include "image.h"
 #include "rc.h"
 
 typedef enum {
@@ -13,6 +14,15 @@ typedef enum {
 	LINE_INFO,
 	LINE_ERROR
 } LineKind;
+
+typedef struct {
+	char *name;
+	char *link;
+	char *mime;
+	long long size;
+	int width;
+	int height;
+} Attachment;
 
 typedef struct {
 	time_t ts;
@@ -25,6 +35,8 @@ typedef struct {
 	char *tmid;
 	size_t ctx_len;
 	size_t meta_len;
+	Attachment *atts;
+	size_t natts;
 	int highlight;
 	int own;
 } Line;
@@ -141,6 +153,15 @@ typedef struct App {
 	Buf paste;
 	char **upload_paths;
 	size_t upload_n;
+	Graphics gfx;
+	char *downloads;
+	int view_active;
+	int view_dirty;
+	size_t view_idx;
+	char *view_name;
+	Buf view_data;
+	int view_w;
+	int view_h;
 } App;
 
 static inline Server *win_server(const App *app, const Window *w)
@@ -175,6 +196,10 @@ void app_scroll_end(App *app);
 void app_search(App *app, int dir);
 void app_paste(App *app, const char *text);
 void app_upload_answer(App *app, int yes);
+void app_attachment_open(App *app);
+void app_view_step(App *app, int dir);
+void app_view_save(App *app, int open);
+void app_view_close(App *app);
 void app_ddp_tick(App *app);
 void app_ddp_readable(App *app, Server *srv);
 long long app_next_reconnect(const App *app);

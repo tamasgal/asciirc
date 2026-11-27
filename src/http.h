@@ -7,6 +7,7 @@
 typedef struct {
 	int status;
 	Buf body;
+	char *location;
 } HttpResponse;
 
 int http_request(const Url *u, const char *method, const char *path, const char *extra_headers,

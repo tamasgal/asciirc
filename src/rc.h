@@ -46,6 +46,7 @@ typedef struct {
 } RcFile;
 
 void rc_multipart(Buf *b, const char *boundary, const RcFile *f, const char *desc, const char *tmid);
+int rc_fetch(Rc *rc, const char *link, Buf *out, char *err, size_t errlen);
 Json *rc_upload(Rc *rc, const char *rid, const RcFile *f, const char *desc, const char *tmid, char *err,
 		size_t errlen);
 

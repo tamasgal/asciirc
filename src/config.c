@@ -86,6 +86,18 @@ void config_parse(Config *cfg, const char *text, const char *path)
 			config_set(&cfg->theme, val);
 			continue;
 		}
+		if (strcmp(key, "downloads") == 0) {
+			config_set(&cfg->downloads, val);
+			continue;
+		}
+		if (strcmp(key, "images") == 0) {
+			if (strcmp(val, "auto") != 0 && strcmp(val, "iterm") != 0 && strcmp(val, "kitty") != 0 &&
+			    strcmp(val, "off") != 0)
+				fprintf(stderr, "asciirc: %s:%d: images must be auto, iterm, kitty or off\n", path, lineno);
+			else
+				config_set(&cfg->images, val);
+			continue;
+		}
 		if (strcmp(key, "nicks") == 0) {
 			cfg->show_usernames = strcmp(val, "username") == 0;
 			continue;
@@ -216,5 +228,7 @@ void config_free(Config *cfg)
 		free_server(&cfg->servers[i]);
 	free(cfg->servers);
 	free(cfg->theme);
+	free(cfg->downloads);
+	free(cfg->images);
 	memset(cfg, 0, sizeof(*cfg));
 }

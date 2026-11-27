@@ -14,6 +14,8 @@ typedef struct {
 
 typedef struct {
 	char *theme;
+	char *downloads;
+	char *images;
 	int show_usernames;
 	ServerConfig *servers;
 	size_t nservers;
