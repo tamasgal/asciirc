@@ -6,7 +6,7 @@
 #include "ui.h"
 #include "util.h"
 
-#define ASCIIRC_VERSION "1.2.0"
+#define ASCIIRC_VERSION "1.3.0"
 
 #include <errno.h>
 #include <fcntl.h>
